@@ -1,18 +1,13 @@
 import datetime
 import io
 import json
+import os
 import time
 from urllib.request import urlopen
 
 import pygame
 import requests
 
-pygame.init()
-
-import os
-
-os.environ["DISPLAY"] = ":0"
-pygame.display.init()
 
 # Settings
 check_delay = 120  # minutes
@@ -20,20 +15,22 @@ rotate_delay = 20  # seconds
 enable_blending = True  # True/False
 blending_duration = 5  # second - how long to spend blending between 2 images
 
-# Set up the drawing window
-screen = pygame.display.set_mode([480, 480], pygame.FULLSCREEN)
-pygame.mouse.set_visible(0)
+screen = None
 
-# Fill the background with black
-screen.fill((0, 0, 0))
 
-# Display loading image
-image = pygame.image.load(r"./loading.jpg")
-screen.blit(image, (0, 0))
-pygame.display.flip()
-
-print("Checking for new photos every " + str(check_delay) + " minutes")
-print("Rotating photos every " + str(rotate_delay) + " seconds")
+def init_display():
+    global screen
+    pygame.init()
+    os.environ["DISPLAY"] = ":0"
+    pygame.display.init()
+    screen = pygame.display.set_mode([480, 480], pygame.FULLSCREEN)
+    pygame.mouse.set_visible(0)
+    screen.fill((0, 0, 0))
+    image = pygame.image.load(r"./loading.jpg")
+    screen.blit(image, (0, 0))
+    pygame.display.flip()
+    print("Checking for new photos every " + str(check_delay) + " minutes")
+    print("Rotating photos every " + str(rotate_delay) + " seconds")
 
 
 def get_epic_images_json():
@@ -128,46 +125,54 @@ def rotate_photos(num_photos, rotate_delay, blend_enabled=False, blend_time=5):
         time.sleep(rotate_delay)
 
 
-# Run until the user asks to quit
-running = True
-first_run = True
-last_data = ""
-newest_data = ""
-last_check = datetime.datetime.now() - datetime.timedelta(hours=1)
-num_photos = 0
+def main():
+    global screen
+    init_display()
 
-while running:
-    # Did anyone try to quit the app?
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-            pygame.quit()
+    # Run until the user asks to quit
+    running = True
+    first_run = True
+    last_data = ""
+    newest_data = ""
+    last_check = datetime.datetime.now() - datetime.timedelta(hours=1)
+    num_photos = 0
 
-    # If we haven't checked for new images recently, check for new images
-    if last_check < datetime.datetime.now() - datetime.timedelta(minutes=check_delay) or first_run == True:
-        print(str(datetime.datetime.now()) + " Checking for new images.")
+    while running:
+        # Did anyone try to quit the app?
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+                pygame.quit()
 
-        last_check = datetime.datetime.now()
+        # If we haven't checked for new images recently, check for new images
+        if last_check < datetime.datetime.now() - datetime.timedelta(minutes=check_delay) or first_run == True:
+            print(str(datetime.datetime.now()) + " Checking for new images.")
 
-        json = get_epic_images_json()
-        newest_data = json[0]["date"]
+            last_check = datetime.datetime.now()
 
-        print("OLD: " + last_data)
-        print("NEW: " + newest_data)
+            json = get_epic_images_json()
+            newest_data = json[0]["date"]
 
-        # If there are new images available, download them, then quickly display them all.
-        if last_data != newest_data:
-            print("Ooh! New Images!")
-            last_data = newest_data
-            imageurls = create_image_urls(json)
-            save_photos(imageurls)
-            num_photos = len(imageurls)
-            rotate_photos(num_photos, 1)
-        else:
-            print("No new images")
+            print("OLD: " + last_data)
+            print("NEW: " + newest_data)
 
-    # Show each photo in order.
-    rotate_photos(num_photos, rotate_delay, enable_blending, blending_duration)
+            # If there are new images available, download them, then quickly display them all.
+            if last_data != newest_data:
+                print("Ooh! New Images!")
+                last_data = newest_data
+                imageurls = create_image_urls(json)
+                save_photos(imageurls)
+                num_photos = len(imageurls)
+                rotate_photos(num_photos, 1)
+            else:
+                print("No new images")
 
-# Done! Time to quit.
-pygame.quit()
+        # Show each photo in order.
+        rotate_photos(num_photos, rotate_delay, enable_blending, blending_duration)
+
+    # Done! Time to quit.
+    pygame.quit()
+
+
+if __name__ == "__main__":
+    main()
