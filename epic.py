@@ -114,7 +114,7 @@ def rotate_photos(num_photos, rotate_delay, blend_enabled=False, blend_time=5):
 
         # Create a surface object and draw image on it.
         new_image = pygame.image.load(r"./" + str(counter) + ".jpg")
-        if counter > 1 and blend_enabled:
+        if counter > 0 and blend_enabled:
             old_image = pygame.image.load(r"./" + str(counter - 1) + ".jpg")
             blend_between_photos(old_image, new_image, blend_time)
         else:
@@ -149,8 +149,8 @@ while running:
 
         last_check = datetime.datetime.now()
 
-        json = get_epic_images_json()
-        newest_data = json[0]["date"]
+        image_data = get_epic_images_json()
+        newest_data = image_data[0]["date"]
 
         print("OLD: " + last_data)
         print("NEW: " + newest_data)
@@ -159,7 +159,7 @@ while running:
         if last_data != newest_data:
             print("Ooh! New Images!")
             last_data = newest_data
-            imageurls = create_image_urls(json)
+            imageurls = create_image_urls(image_data)
             save_photos(imageurls)
             num_photos = len(imageurls)
             rotate_photos(num_photos, 1)
