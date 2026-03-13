@@ -115,3 +115,76 @@ The app is deployed to `~pi/code/epic/` on the Raspberry Pi. The `epic.desktop` 
 | Format code (Linux) | `isort . --sp=.isort.cfg && black . --config=pyproject.toml` |
 | Format code (Windows) | `format_source.cmd` |
 | Set display brightness | `bash brightness.sh <0-100>` |
+
+## GitHub Issues
+
+Issues labelled `agent` are handled autonomously by the dev loop.
+
+Check open issues:
+```bash
+TOKEN=$(python3 -c "import json; print(json.load(open('/home/node/.openclaw/workspace/.secrets/github.json'))['GH_TOKEN'])")
+curl -s -H "Authorization: token $TOKEN" "https://api.github.com/repos/ikuznetsoff/RaspberryPi-epic/issues?state=open&labels=agent&per_page=20"
+```
+
+Create issue:
+```bash
+TOKEN=$(python3 -c "import json; print(json.load(open('/home/node/.openclaw/workspace/.secrets/github.json'))['GH_TOKEN'])")
+curl -s -X POST -H "Authorization: token $TOKEN" \
+  https://api.github.com/repos/ikuznetsoff/RaspberryPi-epic/issues \
+  -d '{"title":"<title>","body":"<description>","labels":["agent"]}'
+```
+
+Close issue:
+```bash
+TOKEN=$(python3 -c "import json; print(json.load(open('/home/node/.openclaw/workspace/.secrets/github.json'))['GH_TOKEN'])")
+curl -s -X PATCH -H "Authorization: token $TOKEN" \
+  https://api.github.com/repos/ikuznetsoff/RaspberryPi-epic/issues/<N> \
+  -d '{"state":"closed"}'
+```
+
+## Autonomous Dev Loop
+
+When triggered by the dev loop cron, Claude Code should:
+
+1. Check open issues labelled `agent` (see above)
+2. If no issues → exit silently (NO_REPLY)
+3. Pick the highest priority issue and post a plan to Telegram BEFORE starting work:
+```bash
+BOT=$(python3 -c "import json; d=json.load(open('/home/node/.openclaw/openclaw.json')); print(d['channels']['telegram']['botToken'])")
+curl -s -X POST "https://api.telegram.org/bot$BOT/sendMessage" \
+  -d "chat_id=-1003870229466&message_thread_id=7" \
+  --data-urlencode "text=🍓 RaspberryPi-epic loop started
+
+📋 Taking into work:
+• #N — title
+
+🔧 Starting..."
+```
+4. Implement the fix in `epic.py` (single-file project — keep it that way)
+5. Format code: `isort . --sp=.isort.cfg && black . --config=pyproject.toml`
+6. Run a quick sanity check (imports, syntax): `python3 -c "import ast; ast.parse(open('epic.py').read()); print('OK')"`
+7. Commit and push:
+```bash
+git config user.email "kuznetsoff@gmail.com"
+git config user.name "Ivan Kuznetsov"
+git add -A
+git commit -m "fix: <description> — closes #N"
+git push origin main
+```
+8. Close the issue (see above)
+9. Post result to Telegram:
+```bash
+BOT=$(python3 -c "import json; d=json.load(open('/home/node/.openclaw/openclaw.json')); print(d['channels']['telegram']['botToken'])")
+curl -s -X POST "https://api.telegram.org/bot$BOT/sendMessage" \
+  -d "chat_id=-1003870229466&message_thread_id=7" \
+  --data-urlencode "text=🍓 RaspberryPi-epic — done
+
+✅ Closed #N — title
+📦 Commit: <hash>"
+```
+
+### Rules
+- Single issue per loop run
+- Keep single-file architecture (epic.py only)
+- No new dependencies unless explicitly required by issue
+- Post to Telegram topic 7 (🗂 Проекты), not a dedicated channel
