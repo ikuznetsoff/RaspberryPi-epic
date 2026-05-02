@@ -340,7 +340,7 @@ def render_forecast_chart(screen, cache, now, x, y, width, height):
 def render_overlay(screen, cache, now):
     dim = pygame.Surface(DISPLAY_SIZE)
     dim.fill((0, 0, 0))
-    dim.set_alpha(180)
+    dim.set_alpha(205)
     screen.blit(dim, (0, 0))
 
     white = (245, 245, 245)
@@ -379,16 +379,16 @@ def render_overlay(screen, cache, now):
             draw_centered(screen, stale_font, label, yellow, 50)
 
     if not cache:
-        draw_centered(screen, temp_font, '—', white, 215)
-        draw_centered(screen, cond_font, 'loading…', white, 290)
+        draw_centered(screen, temp_font, '—', white, 190)
+        draw_centered(screen, cond_font, 'loading…', white, 260)
         return
 
-    draw_centered(screen, temp_font, _format_temp(cache.get('temp_c')), white, 215)
-    draw_centered(screen, cond_font, cache.get('condition', '—'), white, 285)
-    draw_centered(screen, small_font, _format_wind(cache.get('wind_kmh')), white, 320)
-    draw_centered(screen, small_font, _format_sun(cache.get('sunrise'), cache.get('sunset')), white, 350)
-    draw_centered(screen, small_font, _format_rain('Today', cache.get('rain_today', (None, None))), white, 385)
-    draw_centered(screen, small_font, _format_rain('Tomorrow', cache.get('rain_tomorrow', (None, None))), white, 415)
+    draw_centered(screen, temp_font, _format_temp(cache.get('temp_c')), white, 190)
+    draw_centered(screen, cond_font, cache.get('condition', '—'), white, 258)
+    draw_centered(screen, small_font, _format_wind(cache.get('wind_kmh')), white, 290)
+    draw_centered(screen, small_font, _format_sun(cache.get('sunrise'), cache.get('sunset')), white, 320)
+    draw_centered(screen, small_font, _format_rain('Today', cache.get('rain_today', (None, None))), white, 355)
+    draw_centered(screen, small_font, _format_rain('Tomorrow', cache.get('rain_tomorrow', (None, None))), white, 390)
 
 
 def get_epic_images_json():
