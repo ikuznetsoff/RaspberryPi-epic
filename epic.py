@@ -93,6 +93,7 @@ def fetch_weather(lat, lon):
             'latitude': lat,
             'longitude': lon,
             'current': 'temperature_2m,weather_code,wind_speed_10m',
+            'hourly': 'temperature_2m,precipitation_probability',
             'daily': 'sunrise,sunset,precipitation_probability_max,precipitation_sum',
             'forecast_days': 2,
             'timezone': 'auto',
@@ -105,6 +106,7 @@ def fetch_weather(lat, lon):
     data = response.json()
     current = data.get('current', {})
     daily = data.get('daily', {})
+    hourly = data.get('hourly', {})
     code = current.get('weather_code')
     temp = current.get('temperature_2m')
     wind = current.get('wind_speed_10m')
@@ -121,8 +123,35 @@ def fetch_weather(lat, lon):
         'sunset': _parse_hhmm(_safe_index(sunset_list, 0)),
         'rain_today': (_safe_index(prob_list, 0), _safe_index(sum_list, 0)),
         'rain_tomorrow': (_safe_index(prob_list, 1), _safe_index(sum_list, 1)),
+        'hourly_time': hourly.get('time', []) or [],
+        'hourly_temp': hourly.get('temperature_2m', []) or [],
+        'hourly_prob': hourly.get('precipitation_probability', []) or [],
         'fetched_at': datetime.datetime.now(),
     }
+
+
+def _select_next_24h(cache, now):
+    if not cache:
+        return []
+    times = cache.get('hourly_time') or []
+    temps = cache.get('hourly_temp') or []
+    probs = cache.get('hourly_prob') or []
+    if not times:
+        return []
+    floor_now = now.replace(minute=0, second=0, microsecond=0)
+    start_idx = None
+    for i, t_str in enumerate(times):
+        try:
+            dt = datetime.datetime.strptime(t_str, '%Y-%m-%dT%H:%M')
+        except (ValueError, TypeError):
+            continue
+        if dt >= floor_now:
+            start_idx = i
+            break
+    if start_idx is None:
+        return []
+    end_idx = min(start_idx + 24, len(times))
+    return [(_safe_index(temps, j), _safe_index(probs, j)) for j in range(start_idx, end_idx)]
 
 
 def is_weather_stale(cache, refresh_min, now):
@@ -245,6 +274,65 @@ def _format_wind(wind_kmh):
     return 'Wind ' + str(wind_kmh) + ' km/h'
 
 
+def render_forecast_chart(screen, cache, now, x, y, width, height):
+    points = _select_next_24h(cache, now)
+    if len(points) < 2:
+        return False
+    valid_temps = [t for t, _ in points if t is not None]
+    if not valid_temps:
+        return False
+
+    t_min = min(valid_temps)
+    t_max = max(valid_temps)
+    if t_max - t_min < 1:
+        t_max = t_min + 1
+
+    n = len(points)
+    step = width / n
+
+    bar_layer = pygame.Surface((width, height), pygame.SRCALPHA)
+    bar_color = (100, 150, 220, 150)
+    bar_w = max(2, int(step * 0.7))
+    for i, (_, prob) in enumerate(points):
+        if prob is None:
+            continue
+        bar_h = int((prob / 100.0) * height)
+        if bar_h <= 0:
+            continue
+        bar_x = int(i * step + (step - bar_w) / 2)
+        bar_layer.fill(bar_color, rect=pygame.Rect(bar_x, height - bar_h, bar_w, bar_h))
+    screen.blit(bar_layer, (x, y))
+
+    pts = []
+    for i, (t, _) in enumerate(points):
+        if t is None:
+            continue
+        px = int(x + i * step + step / 2)
+        py = int(y + height - ((t - t_min) / (t_max - t_min)) * height)
+        pts.append((px, py))
+    if len(pts) >= 2:
+        pygame.draw.aalines(screen, (245, 245, 245), False, pts, 2)
+
+    if not pygame.font.get_init():
+        pygame.font.init()
+    tick_font = pygame.font.SysFont('dejavusans', 12)
+    label_color = (200, 200, 200)
+    label_y = y + height + 2
+    half = (n - 1) // 2
+    last = n - 1
+    for label, idx in [('Now', 0), ('+12h', half), ('+{}h'.format(last), last)]:
+        rendered = tick_font.render(label, True, label_color)
+        lx = int(x + idx * step + step / 2 - rendered.get_width() / 2)
+        lx = max(x, min(lx, x + width - rendered.get_width()))
+        screen.blit(rendered, (lx, label_y))
+
+    range_font = pygame.font.SysFont('dejavusans', 11)
+    range_text = '{}° / {}°'.format(int(round(t_max)), int(round(t_min)))
+    rendered = range_font.render(range_text, True, label_color)
+    screen.blit(rendered, (x + width - rendered.get_width(), y - rendered.get_height() - 1))
+    return True
+
+
 def render_overlay(screen, cache, now):
     dim = pygame.Surface(DISPLAY_SIZE)
     dim.fill((0, 0, 0))
@@ -269,11 +357,17 @@ def render_overlay(screen, cache, now):
         rect = rendered.get_rect(center=(cx, y))
         surface.blit(rendered, rect)
 
+    chart_x = 70
+    chart_y = 30
+    chart_w = DISPLAY_SIZE[0] - 2 * chart_x
+    chart_h = 80
+    render_forecast_chart(screen, cache, now, chart_x, chart_y, chart_w, chart_h)
+
     if cache and is_weather_stale(cache, WEATHER_REFRESH_MIN, now):
         fetched = cache.get('fetched_at')
         if fetched is not None:
             label = '⚠ stale ' + fetched.strftime('%H:%M')
-            draw_centered(screen, stale_font, label, yellow, 100)
+            draw_centered(screen, stale_font, label, yellow, 12)
 
     if not cache:
         draw_centered(screen, temp_font, '—', white, 200)

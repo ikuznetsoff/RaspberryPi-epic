@@ -453,6 +453,12 @@ class TestFetchWeather:
                 'weather_code': 2,
                 'wind_speed_10m': 14.3,
             },
+            'hourly': {
+                'time': ['2026-05-02T{:02d}:00'.format(h) for h in range(24)]
+                + ['2026-05-03T{:02d}:00'.format(h) for h in range(24)],
+                'temperature_2m': [float(h) for h in range(48)],
+                'precipitation_probability': [h * 2 for h in range(48)],
+            },
             'daily': {
                 'sunrise': ['2026-05-02T06:42', '2026-05-03T06:40'],
                 'sunset': ['2026-05-02T19:08', '2026-05-03T19:10'],
@@ -478,6 +484,9 @@ class TestFetchWeather:
         assert cache['sunset'] == '19:08'
         assert cache['rain_today'] == (60, 2.0)
         assert cache['rain_tomorrow'] == (80, 5.4)
+        assert len(cache['hourly_time']) == 48
+        assert len(cache['hourly_temp']) == 48
+        assert len(cache['hourly_prob']) == 48
         assert isinstance(cache['fetched_at'], datetime.datetime)
         kwargs = get.call_args.kwargs
         assert kwargs['timeout'] == epic.HTTP_TIMEOUT
@@ -486,6 +495,20 @@ class TestFetchWeather:
         assert kwargs['params']['forecast_days'] == 2
         assert 'wind_speed_10m' in kwargs['params']['current']
         assert kwargs['params']['wind_speed_unit'] == 'kmh'
+        assert 'temperature_2m' in kwargs['params']['hourly']
+        assert 'precipitation_probability' in kwargs['params']['hourly']
+
+    def test_hourly_missing_returns_empty_lists(self):
+        fake_response = mock.Mock()
+        payload = self._payload()
+        del payload['hourly']
+        fake_response.json.return_value = payload
+        fake_response.raise_for_status = mock.Mock()
+        with mock.patch('epic.requests.get', return_value=fake_response):
+            cache = epic.fetch_weather(0.0, 0.0)
+        assert cache['hourly_time'] == []
+        assert cache['hourly_temp'] == []
+        assert cache['hourly_prob'] == []
 
     def test_missing_wind(self):
         payload = self._payload()
@@ -783,6 +806,9 @@ class TestRenderOverlay:
             'sunset': '19:08',
             'rain_today': (60, 2.0),
             'rain_tomorrow': (80, 5.4),
+            'hourly_time': ['2026-05-02T{:02d}:00'.format(h) for h in range(24)],
+            'hourly_temp': [float(h) for h in range(24)],
+            'hourly_prob': [h * 4 for h in range(24)],
             'fetched_at': datetime.datetime(2026, 5, 2, 11, 50),
         }
 
@@ -1114,3 +1140,117 @@ class TestCoverageGaps:
         # Schedule advances even on failure so we don't hammer.
         assert new.next_image_api_check_at > now
         assert new.last_image_data == ''  # unchanged
+
+
+# ============================================================
+# 24h forecast chart
+# ============================================================
+
+
+class TestSelectNext24h:
+    def _cache(self, **overrides):
+        base = {
+            'hourly_time': ['2026-05-02T{:02d}:00'.format(h) for h in range(24)]
+            + ['2026-05-03T{:02d}:00'.format(h) for h in range(24)],
+            'hourly_temp': [float(h) for h in range(48)],
+            'hourly_prob': [h * 2 for h in range(48)],
+        }
+        base.update(overrides)
+        return base
+
+    def test_returns_24_hours_from_now(self):
+        cache = self._cache()
+        now = datetime.datetime(2026, 5, 2, 10, 30)
+        result = epic._select_next_24h(cache, now)
+        assert len(result) == 24
+        # First hour should be 10:00 (floor of 10:30)
+        assert result[0] == (10.0, 20)
+        assert result[-1] == (33.0, 66)
+
+    def test_empty_cache(self):
+        assert epic._select_next_24h(None, datetime.datetime(2026, 5, 2, 12, 0)) == []
+        assert epic._select_next_24h({}, datetime.datetime(2026, 5, 2, 12, 0)) == []
+
+    def test_no_hourly_data(self):
+        cache = self._cache(hourly_time=[])
+        result = epic._select_next_24h(cache, datetime.datetime(2026, 5, 2, 12, 0))
+        assert result == []
+
+    def test_now_past_all_data(self):
+        cache = self._cache()
+        now = datetime.datetime(2026, 6, 1, 0, 0)
+        assert epic._select_next_24h(cache, now) == []
+
+    def test_window_clipped_at_end(self):
+        cache = self._cache()
+        # Start 6 hours before end of data — should return only 6 entries.
+        now = datetime.datetime(2026, 5, 3, 18, 0)
+        result = epic._select_next_24h(cache, now)
+        assert len(result) == 6
+
+    def test_handles_malformed_time(self):
+        cache = self._cache(
+            hourly_time=['not-a-time', '2026-05-02T13:00', '2026-05-02T14:00'],
+            hourly_temp=[1.0, 2.0, 3.0],
+            hourly_prob=[10, 20, 30],
+        )
+        now = datetime.datetime(2026, 5, 2, 12, 0)
+        result = epic._select_next_24h(cache, now)
+        # Skips malformed entry, finds 13:00 as first valid >= now
+        assert result[0] == (2.0, 20)
+
+
+class TestRenderForecastChart:
+    def _screen(self):
+        return pygame.Surface((480, 480))
+
+    def _cache(self):
+        return {
+            'hourly_time': ['2026-05-02T{:02d}:00'.format(h) for h in range(24)],
+            'hourly_temp': [float(h) for h in range(24)],
+            'hourly_prob': [h * 4 for h in range(24)],
+        }
+
+    def test_renders_with_full_data(self):
+        screen = self._screen()
+        screen.fill((0, 0, 0))
+        now = datetime.datetime(2026, 5, 2, 0, 0)
+        result = epic.render_forecast_chart(screen, self._cache(), now, 70, 30, 340, 80)
+        assert result is True
+
+    def test_skips_empty_cache(self):
+        screen = self._screen()
+        now = datetime.datetime(2026, 5, 2, 12, 0)
+        assert epic.render_forecast_chart(screen, None, now, 70, 30, 340, 80) is False
+        assert epic.render_forecast_chart(screen, {}, now, 70, 30, 340, 80) is False
+
+    def test_skips_when_no_temps(self):
+        screen = self._screen()
+        cache = {
+            'hourly_time': ['2026-05-02T{:02d}:00'.format(h) for h in range(24)],
+            'hourly_temp': [None] * 24,
+            'hourly_prob': [10] * 24,
+        }
+        now = datetime.datetime(2026, 5, 2, 0, 0)
+        assert epic.render_forecast_chart(screen, cache, now, 70, 30, 340, 80) is False
+
+    def test_handles_constant_temp(self):
+        # All temps equal — no division by zero.
+        screen = self._screen()
+        cache = {
+            'hourly_time': ['2026-05-02T{:02d}:00'.format(h) for h in range(24)],
+            'hourly_temp': [5.0] * 24,
+            'hourly_prob': [50] * 24,
+        }
+        now = datetime.datetime(2026, 5, 2, 0, 0)
+        assert epic.render_forecast_chart(screen, cache, now, 70, 30, 340, 80) is True
+
+    def test_handles_missing_probs(self):
+        screen = self._screen()
+        cache = {
+            'hourly_time': ['2026-05-02T{:02d}:00'.format(h) for h in range(24)],
+            'hourly_temp': [float(h) for h in range(24)],
+            'hourly_prob': [None] * 24,
+        }
+        now = datetime.datetime(2026, 5, 2, 0, 0)
+        assert epic.render_forecast_chart(screen, cache, now, 70, 30, 340, 80) is True
