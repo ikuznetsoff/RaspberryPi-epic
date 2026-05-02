@@ -1,6 +1,8 @@
 import datetime
 import io
 import json
+import os
+import sys
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -315,7 +317,7 @@ def render_forecast_chart(screen, cache, now, x, y, width, height):
 
     if not pygame.font.get_init():
         pygame.font.init()
-    tick_font = pygame.font.SysFont('dejavusans', 12)
+    tick_font = pygame.font.SysFont('dejavusans', 11)
     label_color = (200, 200, 200)
     label_y = y + height + 2
     half = (n - 1) // 2
@@ -326,10 +328,12 @@ def render_forecast_chart(screen, cache, now, x, y, width, height):
         lx = max(x, min(lx, x + width - rendered.get_width()))
         screen.blit(rendered, (lx, label_y))
 
+    # Range label — placed inside the chart area (top-right) so it stays
+    # within the round-bezel safe zone on the Hyperpixel display.
     range_font = pygame.font.SysFont('dejavusans', 11)
-    range_text = '{}° / {}°'.format(int(round(t_max)), int(round(t_min)))
+    range_text = '{}°/{}°'.format(int(round(t_max)), int(round(t_min)))
     rendered = range_font.render(range_text, True, label_color)
-    screen.blit(rendered, (x + width - rendered.get_width(), y - rendered.get_height() - 1))
+    screen.blit(rendered, (x + width - rendered.get_width() - 2, y + 2))
     return True
 
 
@@ -345,10 +349,10 @@ def render_overlay(screen, cache, now):
     if not pygame.font.get_init():
         pygame.font.init()
 
-    temp_font = pygame.font.SysFont('dejavusans', 96, bold=True)
-    cond_font = pygame.font.SysFont('dejavusans', 28)
-    small_font = pygame.font.SysFont('dejavusans', 22)
-    stale_font = pygame.font.SysFont('dejavusans', 16)
+    temp_font = pygame.font.SysFont('dejavusans', 84, bold=True)
+    cond_font = pygame.font.SysFont('dejavusans', 26)
+    small_font = pygame.font.SysFont('dejavusans', 20)
+    stale_font = pygame.font.SysFont('dejavusans', 14)
 
     cx = DISPLAY_SIZE[0] // 2
 
@@ -357,28 +361,33 @@ def render_overlay(screen, cache, now):
         rect = rendered.get_rect(center=(cx, y))
         surface.blit(rendered, rect)
 
-    chart_x = 70
-    chart_y = 30
+    # Round-display safe zone is ~440 px diameter centered at (240, 240).
+    # The top of the visible circle is narrower than the middle, so the chart
+    # sits LOWER (y=70..130) and is NARROWER (x=110..370) than the display
+    # rectangle. All other rows are kept inside their respective y-row safe
+    # widths.
+    chart_x = 110
+    chart_y = 70
     chart_w = DISPLAY_SIZE[0] - 2 * chart_x
-    chart_h = 80
+    chart_h = 60
     render_forecast_chart(screen, cache, now, chart_x, chart_y, chart_w, chart_h)
 
     if cache and is_weather_stale(cache, WEATHER_REFRESH_MIN, now):
         fetched = cache.get('fetched_at')
         if fetched is not None:
             label = '⚠ stale ' + fetched.strftime('%H:%M')
-            draw_centered(screen, stale_font, label, yellow, 12)
+            draw_centered(screen, stale_font, label, yellow, 50)
 
     if not cache:
-        draw_centered(screen, temp_font, '—', white, 200)
-        draw_centered(screen, cond_font, 'loading…', white, 275)
+        draw_centered(screen, temp_font, '—', white, 215)
+        draw_centered(screen, cond_font, 'loading…', white, 290)
         return
 
-    draw_centered(screen, temp_font, _format_temp(cache.get('temp_c')), white, 200)
-    draw_centered(screen, cond_font, cache.get('condition', '—'), white, 275)
-    draw_centered(screen, small_font, _format_wind(cache.get('wind_kmh')), white, 310)
-    draw_centered(screen, small_font, _format_sun(cache.get('sunrise'), cache.get('sunset')), white, 345)
-    draw_centered(screen, small_font, _format_rain('Today', cache.get('rain_today', (None, None))), white, 380)
+    draw_centered(screen, temp_font, _format_temp(cache.get('temp_c')), white, 215)
+    draw_centered(screen, cond_font, cache.get('condition', '—'), white, 285)
+    draw_centered(screen, small_font, _format_wind(cache.get('wind_kmh')), white, 320)
+    draw_centered(screen, small_font, _format_sun(cache.get('sunrise'), cache.get('sunset')), white, 350)
+    draw_centered(screen, small_font, _format_rain('Today', cache.get('rain_today', (None, None))), white, 385)
     draw_centered(screen, small_font, _format_rain('Tomorrow', cache.get('rain_tomorrow', (None, None))), white, 415)
 
 
@@ -426,15 +435,27 @@ def save_photos(imageurls, screen=None):
     print("photos saved")
 
 
+def _is_windowed_dev_mode():
+    """True when EPIC_WINDOWED is set, or when running on Windows/macOS where
+    fullscreen at 480x480 looks bad. The Raspberry Pi (Linux) keeps the
+    default fullscreen behavior."""
+    if os.environ.get("EPIC_WINDOWED"):
+        return True
+    return sys.platform in ("win32", "darwin")
+
+
 def init_display():
     """Initialize pygame and create display surface."""
-    import os
-
     pygame.init()
-    os.environ["DISPLAY"] = ":0"
+    if sys.platform.startswith("linux"):
+        os.environ["DISPLAY"] = ":0"
     pygame.display.init()
-    screen = pygame.display.set_mode(list(DISPLAY_SIZE), pygame.FULLSCREEN)
-    pygame.mouse.set_visible(0)
+    if _is_windowed_dev_mode():
+        screen = pygame.display.set_mode(list(DISPLAY_SIZE))
+        pygame.display.set_caption("EPIC (dev — ESC quits)")
+    else:
+        screen = pygame.display.set_mode(list(DISPLAY_SIZE), pygame.FULLSCREEN)
+        pygame.mouse.set_visible(0)
     screen.fill((0, 0, 0))
     return screen
 
@@ -544,6 +565,9 @@ def main():
 
         for event in events:
             if event.type == pygame.QUIT:
+                running = False
+                break
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 running = False
                 break
         if not running:

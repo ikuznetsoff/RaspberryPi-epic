@@ -220,13 +220,30 @@ class TestInitDisplay:
     @mock.patch("epic.pygame.display.init")
     @mock.patch("epic.pygame.init")
     @mock.patch("epic.pygame.mouse.set_visible")
-    def test_init_display_calls_pygame(self, mock_visible, mock_init, mock_dinit, mock_setmode):
+    def test_init_display_fullscreen_path(self, mock_visible, mock_init, mock_dinit, mock_setmode):
         fake_screen = mock.Mock()
         mock_setmode.return_value = fake_screen
-        result = epic.init_display()
+        with mock.patch("epic._is_windowed_dev_mode", return_value=False):
+            result = epic.init_display()
         mock_init.assert_called_once()
         mock_setmode.assert_called_once()
+        # Fullscreen path hides the mouse cursor.
         mock_visible.assert_called_once_with(0)
+        assert result == fake_screen
+
+    @mock.patch("epic.pygame.display.set_mode")
+    @mock.patch("epic.pygame.display.init")
+    @mock.patch("epic.pygame.init")
+    @mock.patch("epic.pygame.mouse.set_visible")
+    def test_init_display_windowed_dev_path(self, mock_visible, mock_init, mock_dinit, mock_setmode):
+        fake_screen = mock.Mock()
+        mock_setmode.return_value = fake_screen
+        with mock.patch("epic._is_windowed_dev_mode", return_value=True):
+            with mock.patch("epic.pygame.display.set_caption") as mock_caption:
+                result = epic.init_display()
+        # Windowed path keeps mouse cursor visible (no set_visible call) and sets a caption.
+        mock_visible.assert_not_called()
+        mock_caption.assert_called_once()
         assert result == fake_screen
 
     @mock.patch("epic.pygame.display.set_mode")
@@ -236,8 +253,23 @@ class TestInitDisplay:
     def test_screen_filled_black(self, mock_visible, mock_init, mock_dinit, mock_setmode):
         fake_screen = mock.Mock()
         mock_setmode.return_value = fake_screen
-        epic.init_display()
+        with mock.patch("epic._is_windowed_dev_mode", return_value=False):
+            epic.init_display()
         fake_screen.fill.assert_called_once_with((0, 0, 0))
+
+    def test_is_windowed_dev_mode_env_var(self, monkeypatch):
+        monkeypatch.setenv("EPIC_WINDOWED", "1")
+        assert epic._is_windowed_dev_mode() is True
+
+    def test_is_windowed_dev_mode_linux(self, monkeypatch):
+        monkeypatch.delenv("EPIC_WINDOWED", raising=False)
+        monkeypatch.setattr(epic.sys, "platform", "linux")
+        assert epic._is_windowed_dev_mode() is False
+
+    def test_is_windowed_dev_mode_windows(self, monkeypatch):
+        monkeypatch.delenv("EPIC_WINDOWED", raising=False)
+        monkeypatch.setattr(epic.sys, "platform", "win32")
+        assert epic._is_windowed_dev_mode() is True
 
 
 # ============================================================
