@@ -55,6 +55,21 @@ def weather_code_to_text(code):
     return WMO_CODES.get(code, str(code))
 
 
+def geocode_city(name):
+    response = requests.get(
+        'https://geocoding-api.open-meteo.com/v1/search',
+        params={'name': name, 'count': 1},
+        timeout=HTTP_TIMEOUT,
+    )
+    response.raise_for_status()
+    data = response.json()
+    results = data.get('results') or []
+    if not results:
+        raise LookupError("City '" + str(name) + "' not found via Open-Meteo geocoding")
+    hit = results[0]
+    return float(hit['latitude']), float(hit['longitude']), hit.get('name', name)
+
+
 def get_epic_images_json():
     # Call the epic api
     response = requests.get("https://epic.gsfc.nasa.gov/api/natural")

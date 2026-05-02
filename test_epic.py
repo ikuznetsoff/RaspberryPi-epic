@@ -654,3 +654,57 @@ class TestWeatherCodeMapping:
 
     def test_none_returns_dash(self):
         assert epic.weather_code_to_text(None) == '—'
+
+
+# ============================================================
+# geocode_city
+# ============================================================
+
+
+class TestGeocodeCity:
+    def test_happy_path(self):
+        fake_response = mock.Mock()
+        fake_response.json.return_value = {
+            'results': [
+                {
+                    'name': 'Warsaw',
+                    'latitude': 52.23,
+                    'longitude': 21.01,
+                    'country': 'Poland',
+                }
+            ]
+        }
+        fake_response.raise_for_status = mock.Mock()
+        with mock.patch('epic.requests.get', return_value=fake_response) as get:
+            lat, lon, display = epic.geocode_city('Warsaw')
+        assert lat == 52.23
+        assert lon == 21.01
+        assert display == 'Warsaw'
+        get.assert_called_once()
+        kwargs = get.call_args.kwargs
+        url = get.call_args.args[0]
+        assert 'geocoding-api.open-meteo.com' in url
+        assert kwargs.get('timeout') == epic.HTTP_TIMEOUT
+
+    def test_city_not_found_raises(self):
+        fake_response = mock.Mock()
+        fake_response.json.return_value = {'results': []}
+        fake_response.raise_for_status = mock.Mock()
+        with mock.patch('epic.requests.get', return_value=fake_response):
+            with pytest.raises(LookupError, match='not found'):
+                epic.geocode_city('Atlantis')
+
+    def test_missing_results_key_raises(self):
+        fake_response = mock.Mock()
+        fake_response.json.return_value = {}
+        fake_response.raise_for_status = mock.Mock()
+        with mock.patch('epic.requests.get', return_value=fake_response):
+            with pytest.raises(LookupError):
+                epic.geocode_city('Atlantis')
+
+    def test_http_failure_propagates(self):
+        import requests as rq
+
+        with mock.patch('epic.requests.get', side_effect=rq.Timeout('slow')):
+            with pytest.raises(rq.Timeout):
+                epic.geocode_city('Warsaw')
