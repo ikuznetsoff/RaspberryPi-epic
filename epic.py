@@ -257,7 +257,6 @@ def render_overlay(screen, cache, now):
     if not pygame.font.get_init():
         pygame.font.init()
 
-    clock_font = pygame.font.SysFont('dejavusans', 56, bold=True)
     temp_font = pygame.font.SysFont('dejavusans', 96, bold=True)
     cond_font = pygame.font.SysFont('dejavusans', 28)
     small_font = pygame.font.SysFont('dejavusans', 22)
@@ -270,13 +269,11 @@ def render_overlay(screen, cache, now):
         rect = rendered.get_rect(center=(cx, y))
         surface.blit(rendered, rect)
 
-    draw_centered(screen, clock_font, now.strftime('%H:%M'), white, 85)
-
     if cache and is_weather_stale(cache, WEATHER_REFRESH_MIN, now):
         fetched = cache.get('fetched_at')
         if fetched is not None:
             label = '⚠ stale ' + fetched.strftime('%H:%M')
-            draw_centered(screen, stale_font, label, yellow, 125)
+            draw_centered(screen, stale_font, label, yellow, 100)
 
     if not cache:
         draw_centered(screen, temp_font, '—', white, 200)
