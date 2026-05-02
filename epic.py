@@ -217,6 +217,70 @@ def compute_blend_alpha(now, started_at, duration_seconds):
     return max(0, min(255, int(fraction * 255)))
 
 
+def _format_temp(temp_c):
+    if temp_c is None:
+        return '—'
+    return str(temp_c) + '°C'
+
+
+def _format_rain(label, prob_mm):
+    prob, mm = prob_mm
+    prob_text = '—' if prob is None else str(int(prob)) + '%'
+    mm_text = '—' if mm is None else "{:.1f}mm".format(mm)
+    return label + '  ' + prob_text + ' · ' + mm_text
+
+
+def _format_sun(sunrise, sunset):
+    sr = '—' if sunrise is None else sunrise
+    ss = '—' if sunset is None else sunset
+    return '↑ ' + sr + '   ↓ ' + ss
+
+
+def render_overlay(screen, cache, now):
+    dim = pygame.Surface(DISPLAY_SIZE)
+    dim.fill((0, 0, 0))
+    dim.set_alpha(180)
+    screen.blit(dim, (0, 0))
+
+    white = (245, 245, 245)
+    yellow = (220, 200, 80)
+
+    if not pygame.font.get_init():
+        pygame.font.init()
+
+    clock_font = pygame.font.SysFont('dejavusans', 72, bold=True)
+    temp_font = pygame.font.SysFont('dejavusans', 96, bold=True)
+    cond_font = pygame.font.SysFont('dejavusans', 28)
+    small_font = pygame.font.SysFont('dejavusans', 24)
+    stale_font = pygame.font.SysFont('dejavusans', 16)
+
+    cx = DISPLAY_SIZE[0] // 2
+
+    def draw_centered(surface, font, text, color, y):
+        rendered = font.render(text, True, color)
+        rect = rendered.get_rect(center=(cx, y))
+        surface.blit(rendered, rect)
+
+    draw_centered(screen, clock_font, now.strftime('%H:%M'), white, 100)
+
+    if cache and is_weather_stale(cache, WEATHER_REFRESH_MIN, now):
+        fetched = cache.get('fetched_at')
+        if fetched is not None:
+            label = '⚠ stale ' + fetched.strftime('%H:%M')
+            draw_centered(screen, stale_font, label, yellow, 140)
+
+    if not cache:
+        draw_centered(screen, temp_font, '—', white, 215)
+        draw_centered(screen, cond_font, 'loading…', white, 295)
+        return
+
+    draw_centered(screen, temp_font, _format_temp(cache.get('temp_c')), white, 215)
+    draw_centered(screen, cond_font, cache.get('condition', '—'), white, 295)
+    draw_centered(screen, small_font, _format_sun(cache.get('sunrise'), cache.get('sunset')), white, 345)
+    draw_centered(screen, small_font, _format_rain('Today', cache.get('rain_today', (None, None))), white, 385)
+    draw_centered(screen, small_font, _format_rain('Tomorrow', cache.get('rain_tomorrow', (None, None))), white, 420)
+
+
 def get_epic_images_json():
     # Call the epic api
     response = requests.get("https://epic.gsfc.nasa.gov/api/natural")

@@ -1018,3 +1018,66 @@ class TestRenderHelpers:
     def test_compute_blend_alpha_none_started(self):
         t0 = datetime.datetime(2026, 5, 2, 12, 0, 0)
         assert epic.compute_blend_alpha(t0, None, 5) == 255
+
+
+# ============================================================
+# render_overlay
+# ============================================================
+
+
+class TestRenderOverlay:
+    def _screen(self):
+        return pygame.Surface((480, 480))
+
+    def _full_cache(self):
+        return {
+            'temp_c': -8,
+            'weather_code': 2,
+            'condition': 'Partly Cloudy',
+            'sunrise': '06:42',
+            'sunset': '19:08',
+            'rain_today': (60, 2.0),
+            'rain_tomorrow': (80, 5.4),
+            'fetched_at': datetime.datetime(2026, 5, 2, 11, 50),
+        }
+
+    def test_render_with_full_cache(self):
+        screen = self._screen()
+        screen.fill((255, 255, 255))
+        now = datetime.datetime(2026, 5, 2, 12, 0, 0)
+        epic.render_overlay(screen, self._full_cache(), now)
+        cx, cy = 240, 240
+        r, g, b = screen.get_at((cx, cy))[:3]
+        assert (r, g, b) != (255, 255, 255)
+
+    def test_render_with_no_cache(self):
+        screen = self._screen()
+        now = datetime.datetime(2026, 5, 2, 12, 0, 0)
+        epic.render_overlay(screen, None, now)
+
+    def test_render_with_empty_cache(self):
+        screen = self._screen()
+        now = datetime.datetime(2026, 5, 2, 12, 0, 0)
+        epic.render_overlay(screen, {}, now)
+
+    def test_render_with_partial_cache(self):
+        screen = self._screen()
+        cache = {
+            'temp_c': None,
+            'weather_code': None,
+            'condition': '—',
+            'sunrise': None,
+            'sunset': None,
+            'rain_today': (None, None),
+            'rain_tomorrow': (None, None),
+            'fetched_at': datetime.datetime(2026, 5, 2, 11, 0),
+        }
+        now = datetime.datetime(2026, 5, 2, 12, 0, 0)
+        epic.render_overlay(screen, cache, now)
+
+    def test_render_marks_stale(self):
+        screen = self._screen()
+        cache = self._full_cache()
+        cache['fetched_at'] = datetime.datetime(2026, 5, 2, 10, 0)
+        now = datetime.datetime(2026, 5, 2, 12, 0, 0)
+        epic.render_overlay(screen, cache, now)
