@@ -454,7 +454,9 @@ def main():
         state = _maybe_check_for_new_images(state, screen, now)
 
         state = tick_state(
-            state, events, now,
+            state,
+            events,
+            now,
             blend_enabled=enable_blending,
             rotate_delay=rotate_delay,
             blend_duration=blending_duration,

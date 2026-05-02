@@ -911,9 +911,13 @@ class TestTapRefresh:
             epic,
             'fetch_weather',
             lambda lat, lon: {
-                'temp_c': 1, 'weather_code': 0, 'condition': 'Clear',
-                'sunrise': '06:00', 'sunset': '18:00',
-                'rain_today': (0, 0.0), 'rain_tomorrow': (0, 0.0),
+                'temp_c': 1,
+                'weather_code': 0,
+                'condition': 'Clear',
+                'sunrise': '06:00',
+                'sunset': '18:00',
+                'rain_today': (0, 0.0),
+                'rain_tomorrow': (0, 0.0),
                 'fetched_at': datetime.datetime.now(),
             },
         )
@@ -952,3 +956,140 @@ class TestTapRefresh:
         epic._maybe_kick_tap_refresh(0.0, 0.0, cache_ref, lock)
         assert cache_ref['value']['fetched_at'] == old
         assert cache_ref['inflight'] is False
+
+
+# ============================================================
+# Coverage gap-fillers
+# ============================================================
+
+
+class TestCoverageGaps:
+    def test_safe_index_none_seq(self):
+        assert epic._safe_index(None, 0) is None
+
+    def test_parse_hhmm_none(self):
+        assert epic._parse_hhmm(None) is None
+
+    def test_parse_hhmm_no_t_separator(self):
+        assert epic._parse_hhmm('06:42') == '06:42'
+
+    def test_is_weather_stale_fetched_at_none(self):
+        cache = {'fetched_at': None}
+        now = datetime.datetime(2026, 5, 2, 12, 0)
+        assert epic.is_weather_stale(cache, refresh_min=30, now=now) is True
+
+    def test_tick_state_overlay_no_auto_dismiss_yet(self):
+        opened = datetime.datetime(2026, 5, 2, 12, 0, 0)
+        state = epic.AppState(
+            mode=epic.MODE_OVERLAY,
+            current_idx=0,
+            num_photos=3,
+            next_photo_swap_at=opened,
+            next_image_api_check_at=opened,
+            overlay_dismiss_at=opened + datetime.timedelta(seconds=60),
+            blend_started_at=None,
+            last_image_data='',
+        )
+        now = opened + datetime.timedelta(seconds=10)
+        new = epic.tick_state(state, [], now, blend_enabled=True, rotate_delay=20, blend_duration=5)
+        assert new.mode == epic.MODE_OVERLAY  # still up
+
+    def test_tick_state_blending_with_none_started(self):
+        now = datetime.datetime(2026, 5, 2, 12, 0, 0)
+        state = epic.AppState(
+            mode=epic.MODE_BLENDING,
+            current_idx=0,
+            num_photos=3,
+            next_photo_swap_at=now,
+            next_image_api_check_at=now,
+            overlay_dismiss_at=None,
+            blend_started_at=None,
+            last_image_data='',
+        )
+        new = epic.tick_state(state, [], now, blend_enabled=True, rotate_delay=20, blend_duration=5)
+        # Defensive: stays blending (blend_started_at sentinel for "not actually started")
+        assert new.mode == epic.MODE_BLENDING
+
+    def test_tick_state_blending_mid_progress(self):
+        started = datetime.datetime(2026, 5, 2, 12, 0, 0)
+        state = epic.AppState(
+            mode=epic.MODE_BLENDING,
+            current_idx=0,
+            num_photos=3,
+            next_photo_swap_at=started,
+            next_image_api_check_at=started,
+            overlay_dismiss_at=None,
+            blend_started_at=started,
+            last_image_data='',
+        )
+        now = started + datetime.timedelta(seconds=2)  # mid-blend
+        new = epic.tick_state(state, [], now, blend_enabled=True, rotate_delay=20, blend_duration=5)
+        assert new.mode == epic.MODE_BLENDING
+        assert new.current_idx == 0  # not yet advanced
+
+    def test_render_overlay_initializes_font_when_uninited(self, monkeypatch):
+        # Force the "font not init" branch
+        monkeypatch.setattr(epic.pygame.font, 'get_init', lambda: False)
+        init_calls = []
+        original_init = epic.pygame.font.init
+        monkeypatch.setattr(epic.pygame.font, 'init', lambda: init_calls.append(1) or original_init())
+        screen = pygame.Surface((480, 480))
+        now = datetime.datetime(2026, 5, 2, 12, 0)
+        epic.render_overlay(screen, None, now)
+        assert init_calls  # init was called at least once
+
+    def test_maybe_check_for_new_images_not_due(self):
+        now = datetime.datetime(2026, 5, 2, 12, 0)
+        state = epic.AppState(
+            mode=epic.MODE_PHOTO,
+            current_idx=0,
+            num_photos=2,
+            next_photo_swap_at=now,
+            next_image_api_check_at=now + datetime.timedelta(minutes=30),  # not yet
+            overlay_dismiss_at=None,
+            blend_started_at=None,
+            last_image_data='abc',
+        )
+        new = epic._maybe_check_for_new_images(state, mock.Mock(), now)
+        assert new is state  # unchanged
+
+    def test_maybe_check_for_new_images_no_new_data(self, monkeypatch):
+        now = datetime.datetime(2026, 5, 2, 12, 0)
+        state = epic.AppState(
+            mode=epic.MODE_PHOTO,
+            current_idx=0,
+            num_photos=2,
+            next_photo_swap_at=now,
+            next_image_api_check_at=now,  # due
+            overlay_dismiss_at=None,
+            blend_started_at=None,
+            last_image_data='2026-05-02 12:00:00',  # same as what API returns
+        )
+        monkeypatch.setattr(epic, 'get_epic_images_json', lambda: [{'date': '2026-05-02 12:00:00', 'image': 'x'}])
+        save_called = []
+        monkeypatch.setattr(epic, 'save_photos', lambda *a, **k: save_called.append(1))
+        new = epic._maybe_check_for_new_images(state, mock.Mock(), now)
+        assert save_called == []  # no download since data unchanged
+        assert new.next_image_api_check_at > now
+
+    def test_maybe_check_for_new_images_api_failure(self, monkeypatch):
+        now = datetime.datetime(2026, 5, 2, 12, 0)
+        state = epic.AppState(
+            mode=epic.MODE_PHOTO,
+            current_idx=0,
+            num_photos=2,
+            next_photo_swap_at=now,
+            next_image_api_check_at=now,
+            overlay_dismiss_at=None,
+            blend_started_at=None,
+            last_image_data='',
+        )
+
+        def boom():
+            raise RuntimeError('api down')
+
+        monkeypatch.setattr(epic, 'get_epic_images_json', boom)
+        new = epic._maybe_check_for_new_images(state, mock.Mock(), now)
+        # Schedule advances even on failure so we don't hammer.
+        assert new.next_image_api_check_at > now
+        assert new.last_image_data == ''  # unchanged
