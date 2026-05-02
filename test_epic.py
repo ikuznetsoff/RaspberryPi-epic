@@ -867,3 +867,88 @@ class TestMainLoopSmoke:
             epic.main()
         finally:
             os.chdir(old_cwd)
+
+
+# ============================================================
+# Tap-driven refresh wiring
+# ============================================================
+
+
+class TestTapRefresh:
+    def test_skips_when_fresh(self, monkeypatch):
+        cache_ref = {
+            'value': {'fetched_at': datetime.datetime.now()},
+            'inflight': False,
+        }
+        lock = mock.MagicMock()
+        called = []
+        monkeypatch.setattr(epic, 'fetch_weather', lambda lat, lon: called.append((lat, lon)))
+        fake_thread = mock.MagicMock()
+        monkeypatch.setattr(epic.threading, 'Thread', lambda *a, **kw: fake_thread)
+
+        epic._maybe_kick_tap_refresh(0.0, 0.0, cache_ref, lock)
+
+        assert fake_thread.start.called is False
+        assert called == []
+
+    def test_kicks_when_stale(self, monkeypatch):
+        old = datetime.datetime.now() - datetime.timedelta(minutes=epic.WEATHER_TAP_REFRESH_MIN + 1)
+        cache_ref = {
+            'value': {'fetched_at': old},
+            'inflight': False,
+        }
+        lock = mock.MagicMock()
+        captured = {}
+
+        def fake_thread_factory(target=None, daemon=None, **kwargs):
+            captured['target'] = target
+            t = mock.MagicMock()
+            t.start = lambda: target() if target else None
+            return t
+
+        monkeypatch.setattr(epic.threading, 'Thread', fake_thread_factory)
+        monkeypatch.setattr(
+            epic,
+            'fetch_weather',
+            lambda lat, lon: {
+                'temp_c': 1, 'weather_code': 0, 'condition': 'Clear',
+                'sunrise': '06:00', 'sunset': '18:00',
+                'rain_today': (0, 0.0), 'rain_tomorrow': (0, 0.0),
+                'fetched_at': datetime.datetime.now(),
+            },
+        )
+
+        epic._maybe_kick_tap_refresh(52.23, 21.01, cache_ref, lock)
+
+        assert captured.get('target') is not None
+        assert cache_ref['value']['temp_c'] == 1
+        assert cache_ref['inflight'] is False
+
+    def test_skips_when_already_inflight(self, monkeypatch):
+        cache_ref = {'value': None, 'inflight': True}
+        lock = mock.MagicMock()
+        called = []
+        monkeypatch.setattr(epic, 'fetch_weather', lambda lat, lon: called.append(1))
+        epic._maybe_kick_tap_refresh(0.0, 0.0, cache_ref, lock)
+        assert called == []
+
+    def test_swallows_fetch_error(self, monkeypatch):
+        old = datetime.datetime.now() - datetime.timedelta(minutes=60)
+        cache_ref = {'value': {'fetched_at': old}, 'inflight': False}
+        lock = mock.MagicMock()
+
+        def fake_thread_factory(target=None, daemon=None, **kwargs):
+            t = mock.MagicMock()
+            t.start = lambda: target()
+            return t
+
+        monkeypatch.setattr(epic.threading, 'Thread', fake_thread_factory)
+
+        def boom(lat, lon):
+            raise RuntimeError('network down')
+
+        monkeypatch.setattr(epic, 'fetch_weather', boom)
+
+        epic._maybe_kick_tap_refresh(0.0, 0.0, cache_ref, lock)
+        assert cache_ref['value']['fetched_at'] == old
+        assert cache_ref['inflight'] is False
