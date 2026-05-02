@@ -451,6 +451,7 @@ class TestFetchWeather:
             'current': {
                 'temperature_2m': -7.6,
                 'weather_code': 2,
+                'wind_speed_10m': 14.3,
             },
             'daily': {
                 'sunrise': ['2026-05-02T06:42', '2026-05-03T06:40'],
@@ -472,6 +473,7 @@ class TestFetchWeather:
         assert cache['temp_c'] == -8
         assert cache['weather_code'] == 2
         assert cache['condition'] == 'Partly Cloudy'
+        assert cache['wind_kmh'] == 14
         assert cache['sunrise'] == '06:42'
         assert cache['sunset'] == '19:08'
         assert cache['rain_today'] == (60, 2.0)
@@ -482,6 +484,18 @@ class TestFetchWeather:
         assert kwargs['params']['latitude'] == 52.23
         assert kwargs['params']['longitude'] == 21.01
         assert kwargs['params']['forecast_days'] == 2
+        assert 'wind_speed_10m' in kwargs['params']['current']
+        assert kwargs['params']['wind_speed_unit'] == 'kmh'
+
+    def test_missing_wind(self):
+        payload = self._payload()
+        payload['current']['wind_speed_10m'] = None
+        fake_response = mock.Mock()
+        fake_response.json.return_value = payload
+        fake_response.raise_for_status = mock.Mock()
+        with mock.patch('epic.requests.get', return_value=fake_response):
+            cache = epic.fetch_weather(0.0, 0.0)
+        assert cache['wind_kmh'] is None
 
     def test_missing_precip_probability(self):
         payload = self._payload()
@@ -764,12 +778,19 @@ class TestRenderOverlay:
             'temp_c': -8,
             'weather_code': 2,
             'condition': 'Partly Cloudy',
+            'wind_kmh': 14,
             'sunrise': '06:42',
             'sunset': '19:08',
             'rain_today': (60, 2.0),
             'rain_tomorrow': (80, 5.4),
             'fetched_at': datetime.datetime(2026, 5, 2, 11, 50),
         }
+
+    def test_format_wind_value(self):
+        assert epic._format_wind(14) == 'Wind 14 km/h'
+
+    def test_format_wind_none(self):
+        assert epic._format_wind(None) == 'Wind —'
 
     def test_render_with_full_cache(self):
         screen = self._screen()

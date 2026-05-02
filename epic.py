@@ -92,11 +92,12 @@ def fetch_weather(lat, lon):
         params={
             'latitude': lat,
             'longitude': lon,
-            'current': 'temperature_2m,weather_code',
+            'current': 'temperature_2m,weather_code,wind_speed_10m',
             'daily': 'sunrise,sunset,precipitation_probability_max,precipitation_sum',
             'forecast_days': 2,
             'timezone': 'auto',
             'temperature_unit': 'celsius',
+            'wind_speed_unit': 'kmh',
         },
         timeout=HTTP_TIMEOUT,
     )
@@ -106,6 +107,7 @@ def fetch_weather(lat, lon):
     daily = data.get('daily', {})
     code = current.get('weather_code')
     temp = current.get('temperature_2m')
+    wind = current.get('wind_speed_10m')
     sunrise_list = daily.get('sunrise', [])
     sunset_list = daily.get('sunset', [])
     prob_list = daily.get('precipitation_probability_max', [])
@@ -114,6 +116,7 @@ def fetch_weather(lat, lon):
         'temp_c': int(round(temp)) if temp is not None else None,
         'weather_code': code,
         'condition': weather_code_to_text(code),
+        'wind_kmh': int(round(wind)) if wind is not None else None,
         'sunrise': _parse_hhmm(_safe_index(sunrise_list, 0)),
         'sunset': _parse_hhmm(_safe_index(sunset_list, 0)),
         'rain_today': (_safe_index(prob_list, 0), _safe_index(sum_list, 0)),
@@ -236,6 +239,12 @@ def _format_sun(sunrise, sunset):
     return '↑ ' + sr + '   ↓ ' + ss
 
 
+def _format_wind(wind_kmh):
+    if wind_kmh is None:
+        return 'Wind —'
+    return 'Wind ' + str(wind_kmh) + ' km/h'
+
+
 def render_overlay(screen, cache, now):
     dim = pygame.Surface(DISPLAY_SIZE)
     dim.fill((0, 0, 0))
@@ -248,10 +257,10 @@ def render_overlay(screen, cache, now):
     if not pygame.font.get_init():
         pygame.font.init()
 
-    clock_font = pygame.font.SysFont('dejavusans', 72, bold=True)
+    clock_font = pygame.font.SysFont('dejavusans', 56, bold=True)
     temp_font = pygame.font.SysFont('dejavusans', 96, bold=True)
     cond_font = pygame.font.SysFont('dejavusans', 28)
-    small_font = pygame.font.SysFont('dejavusans', 24)
+    small_font = pygame.font.SysFont('dejavusans', 22)
     stale_font = pygame.font.SysFont('dejavusans', 16)
 
     cx = DISPLAY_SIZE[0] // 2
@@ -261,24 +270,25 @@ def render_overlay(screen, cache, now):
         rect = rendered.get_rect(center=(cx, y))
         surface.blit(rendered, rect)
 
-    draw_centered(screen, clock_font, now.strftime('%H:%M'), white, 100)
+    draw_centered(screen, clock_font, now.strftime('%H:%M'), white, 85)
 
     if cache and is_weather_stale(cache, WEATHER_REFRESH_MIN, now):
         fetched = cache.get('fetched_at')
         if fetched is not None:
             label = '⚠ stale ' + fetched.strftime('%H:%M')
-            draw_centered(screen, stale_font, label, yellow, 140)
+            draw_centered(screen, stale_font, label, yellow, 125)
 
     if not cache:
-        draw_centered(screen, temp_font, '—', white, 215)
-        draw_centered(screen, cond_font, 'loading…', white, 295)
+        draw_centered(screen, temp_font, '—', white, 200)
+        draw_centered(screen, cond_font, 'loading…', white, 275)
         return
 
-    draw_centered(screen, temp_font, _format_temp(cache.get('temp_c')), white, 215)
-    draw_centered(screen, cond_font, cache.get('condition', '—'), white, 295)
+    draw_centered(screen, temp_font, _format_temp(cache.get('temp_c')), white, 200)
+    draw_centered(screen, cond_font, cache.get('condition', '—'), white, 275)
+    draw_centered(screen, small_font, _format_wind(cache.get('wind_kmh')), white, 310)
     draw_centered(screen, small_font, _format_sun(cache.get('sunrise'), cache.get('sunset')), white, 345)
-    draw_centered(screen, small_font, _format_rain('Today', cache.get('rain_today', (None, None))), white, 385)
-    draw_centered(screen, small_font, _format_rain('Tomorrow', cache.get('rain_tomorrow', (None, None))), white, 420)
+    draw_centered(screen, small_font, _format_rain('Today', cache.get('rain_today', (None, None))), white, 380)
+    draw_centered(screen, small_font, _format_rain('Tomorrow', cache.get('rain_tomorrow', (None, None))), white, 415)
 
 
 def get_epic_images_json():
