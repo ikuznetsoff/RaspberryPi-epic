@@ -13,9 +13,46 @@ rotate_delay = 20  # seconds
 enable_blending = True  # True/False
 blending_duration = 5  # second - how long to spend blending between 2 images
 
+# Weather overlay settings
+CITY_NAME = 'Warsaw'
+WEATHER_REFRESH_MIN = 30
+WEATHER_TAP_REFRESH_MIN = 10
+HTTP_TIMEOUT = 10
+OVERLAY_AUTO_DISMISS_SEC = 60
+
 DISPLAY_SIZE = (480, 480)
 CROP_SIZE = 830
 CROP_OFFSET = 125
+
+WMO_CODES = {
+    0: 'Clear',
+    1: 'Mostly Clear',
+    2: 'Partly Cloudy',
+    3: 'Overcast',
+    45: 'Fog',
+    48: 'Rime Fog',
+    51: 'Light Drizzle',
+    53: 'Drizzle',
+    55: 'Heavy Drizzle',
+    61: 'Light Rain',
+    63: 'Rain',
+    65: 'Heavy Rain',
+    71: 'Light Snow',
+    73: 'Snow',
+    75: 'Heavy Snow',
+    80: 'Showers',
+    81: 'Heavy Showers',
+    82: 'Violent Showers',
+    95: 'Thunderstorm',
+    96: 'Thunder w/ Hail',
+    99: 'Thunder w/ Heavy Hail',
+}
+
+
+def weather_code_to_text(code):
+    if code is None:
+        return '—'
+    return WMO_CODES.get(code, str(code))
 
 
 def get_epic_images_json():

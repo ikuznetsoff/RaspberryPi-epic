@@ -602,3 +602,55 @@ class TestGetEpicImagesJsonErrors:
         mock_get.side_effect = Exception("Network error")
         with pytest.raises(Exception, match="Network error"):
             epic.get_epic_images_json()
+
+
+# ============================================================
+# Config constants — weather overlay
+# ============================================================
+
+
+class TestWeatherConfig:
+    def test_city_name_default(self):
+        assert epic.CITY_NAME == 'Warsaw'
+
+    def test_weather_refresh_minutes(self):
+        assert epic.WEATHER_REFRESH_MIN == 30
+
+    def test_weather_tap_refresh_minutes(self):
+        assert epic.WEATHER_TAP_REFRESH_MIN == 10
+
+    def test_http_timeout(self):
+        assert epic.HTTP_TIMEOUT == 10
+
+    def test_overlay_auto_dismiss(self):
+        assert epic.OVERLAY_AUTO_DISMISS_SEC == 60
+
+
+# ============================================================
+# WMO weather code mapping
+# ============================================================
+
+
+class TestWeatherCodeMapping:
+    @pytest.mark.parametrize(
+        'code,expected',
+        [
+            (0, 'Clear'),
+            (1, 'Mostly Clear'),
+            (2, 'Partly Cloudy'),
+            (3, 'Overcast'),
+            (45, 'Fog'),
+            (51, 'Light Drizzle'),
+            (61, 'Light Rain'),
+            (71, 'Light Snow'),
+            (95, 'Thunderstorm'),
+        ],
+    )
+    def test_known_codes(self, code, expected):
+        assert epic.weather_code_to_text(code) == expected
+
+    def test_unknown_code_returns_string(self):
+        assert epic.weather_code_to_text(9999) == '9999'
+
+    def test_none_returns_dash(self):
+        assert epic.weather_code_to_text(None) == '—'
