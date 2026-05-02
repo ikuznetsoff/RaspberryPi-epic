@@ -1,7 +1,9 @@
 import datetime
 import io
 import json
+import threading
 import time
+from dataclasses import dataclass, replace
 from urllib.request import urlopen
 
 import pygame
@@ -127,6 +129,73 @@ def is_weather_stale(cache, refresh_min, now):
     if fetched_at is None:
         return True
     return (now - fetched_at) > datetime.timedelta(minutes=refresh_min)
+
+
+MODE_PHOTO = 'photo'
+MODE_BLENDING = 'blending'
+MODE_OVERLAY = 'overlay'
+
+
+@dataclass
+class AppState:
+    mode: str
+    current_idx: int
+    num_photos: int
+    next_photo_swap_at: datetime.datetime
+    next_image_api_check_at: datetime.datetime
+    overlay_dismiss_at: 'datetime.datetime | None'
+    blend_started_at: 'datetime.datetime | None'
+    last_image_data: str
+
+
+def _advance_photo(state, now, rotate_delay):
+    next_idx = (state.current_idx + 1) % max(state.num_photos, 1)
+    return replace(
+        state,
+        mode=MODE_PHOTO,
+        current_idx=next_idx,
+        blend_started_at=None,
+        next_photo_swap_at=now + datetime.timedelta(seconds=rotate_delay),
+    )
+
+
+def tick_state(state, events, now, blend_enabled, rotate_delay, blend_duration):
+    tap = any(getattr(e, 'type', None) == pygame.MOUSEBUTTONDOWN for e in events)
+
+    if tap:
+        if state.mode == MODE_OVERLAY:
+            return replace(state, mode=MODE_PHOTO, overlay_dismiss_at=None)
+        if state.mode == MODE_BLENDING:
+            advanced = _advance_photo(state, now, rotate_delay)
+            return replace(
+                advanced,
+                mode=MODE_OVERLAY,
+                overlay_dismiss_at=now + datetime.timedelta(seconds=OVERLAY_AUTO_DISMISS_SEC),
+            )
+        return replace(
+            state,
+            mode=MODE_OVERLAY,
+            overlay_dismiss_at=now + datetime.timedelta(seconds=OVERLAY_AUTO_DISMISS_SEC),
+        )
+
+    if state.mode == MODE_OVERLAY:
+        if state.overlay_dismiss_at is not None and now >= state.overlay_dismiss_at:
+            return replace(state, mode=MODE_PHOTO, overlay_dismiss_at=None)
+        return state
+
+    if state.mode == MODE_BLENDING:
+        if state.blend_started_at is None:
+            return state
+        if (now - state.blend_started_at) >= datetime.timedelta(seconds=blend_duration):
+            return _advance_photo(state, now, rotate_delay)
+        return state
+
+    if state.mode == MODE_PHOTO and now >= state.next_photo_swap_at and state.num_photos > 0:
+        if blend_enabled and state.num_photos > 1:
+            return replace(state, mode=MODE_BLENDING, blend_started_at=now)
+        return _advance_photo(state, now, rotate_delay)
+
+    return state
 
 
 def get_epic_images_json():

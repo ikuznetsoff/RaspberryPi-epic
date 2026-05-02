@@ -833,3 +833,120 @@ class TestIsWeatherStale:
         cache = {'fetched_at': datetime.datetime(2026, 5, 2, 11, 30)}
         now = datetime.datetime(2026, 5, 2, 12, 0)
         assert epic.is_weather_stale(cache, refresh_min=30, now=now) is False
+
+
+# ============================================================
+# AppState + tick_state
+# ============================================================
+
+
+class TestAppState:
+    def _make_state(self, **overrides):
+        defaults = {
+            'mode': epic.MODE_PHOTO,
+            'current_idx': 0,
+            'num_photos': 5,
+            'next_photo_swap_at': datetime.datetime(2026, 5, 2, 12, 0, 20),
+            'next_image_api_check_at': datetime.datetime(2026, 5, 2, 14, 0, 0),
+            'overlay_dismiss_at': None,
+            'blend_started_at': None,
+            'last_image_data': '',
+        }
+        defaults.update(overrides)
+        return epic.AppState(**defaults)
+
+    def test_modes_defined(self):
+        assert epic.MODE_PHOTO == 'photo'
+        assert epic.MODE_BLENDING == 'blending'
+        assert epic.MODE_OVERLAY == 'overlay'
+
+    def test_photo_to_overlay_on_tap(self):
+        state = self._make_state()
+        events = [mock.Mock(type=pygame.MOUSEBUTTONDOWN)]
+        now = datetime.datetime(2026, 5, 2, 12, 0, 5)
+        new = epic.tick_state(state, events, now, blend_enabled=True, rotate_delay=20, blend_duration=5)
+        assert new.mode == epic.MODE_OVERLAY
+        assert new.overlay_dismiss_at == now + datetime.timedelta(seconds=epic.OVERLAY_AUTO_DISMISS_SEC)
+
+    def test_overlay_to_photo_on_tap(self):
+        now = datetime.datetime(2026, 5, 2, 12, 0, 5)
+        state = self._make_state(
+            mode=epic.MODE_OVERLAY,
+            overlay_dismiss_at=now + datetime.timedelta(seconds=60),
+        )
+        events = [mock.Mock(type=pygame.MOUSEBUTTONDOWN)]
+        new = epic.tick_state(state, events, now, blend_enabled=True, rotate_delay=20, blend_duration=5)
+        assert new.mode == epic.MODE_PHOTO
+        assert new.overlay_dismiss_at is None
+
+    def test_overlay_auto_dismiss(self):
+        opened = datetime.datetime(2026, 5, 2, 12, 0, 0)
+        state = self._make_state(
+            mode=epic.MODE_OVERLAY,
+            overlay_dismiss_at=opened + datetime.timedelta(seconds=60),
+        )
+        now = opened + datetime.timedelta(seconds=61)
+        new = epic.tick_state(state, [], now, blend_enabled=True, rotate_delay=20, blend_duration=5)
+        assert new.mode == epic.MODE_PHOTO
+        assert new.overlay_dismiss_at is None
+
+    def test_photo_swap_starts_blend(self):
+        now = datetime.datetime(2026, 5, 2, 12, 0, 25)
+        state = self._make_state(
+            current_idx=1,
+            next_photo_swap_at=datetime.datetime(2026, 5, 2, 12, 0, 20),
+        )
+        new = epic.tick_state(state, [], now, blend_enabled=True, rotate_delay=20, blend_duration=5)
+        assert new.mode == epic.MODE_BLENDING
+        assert new.blend_started_at == now
+
+    def test_photo_swap_skips_blend_when_disabled(self):
+        now = datetime.datetime(2026, 5, 2, 12, 0, 25)
+        state = self._make_state(
+            current_idx=1,
+            next_photo_swap_at=datetime.datetime(2026, 5, 2, 12, 0, 20),
+        )
+        new = epic.tick_state(state, [], now, blend_enabled=False, rotate_delay=20, blend_duration=5)
+        assert new.mode == epic.MODE_PHOTO
+        assert new.current_idx == 2
+        assert new.next_photo_swap_at == now + datetime.timedelta(seconds=20)
+
+    def test_blend_completes(self):
+        started = datetime.datetime(2026, 5, 2, 12, 0, 25)
+        now = started + datetime.timedelta(seconds=5, milliseconds=10)
+        state = self._make_state(
+            mode=epic.MODE_BLENDING,
+            current_idx=1,
+            blend_started_at=started,
+        )
+        new = epic.tick_state(state, [], now, blend_enabled=True, rotate_delay=20, blend_duration=5)
+        assert new.mode == epic.MODE_PHOTO
+        assert new.current_idx == 2
+        assert new.blend_started_at is None
+        assert new.next_photo_swap_at == now + datetime.timedelta(seconds=20)
+
+    def test_blend_wraps_at_end(self):
+        started = datetime.datetime(2026, 5, 2, 12, 0, 25)
+        now = started + datetime.timedelta(seconds=6)
+        state = self._make_state(
+            mode=epic.MODE_BLENDING,
+            current_idx=4,
+            num_photos=5,
+            blend_started_at=started,
+        )
+        new = epic.tick_state(state, [], now, blend_enabled=True, rotate_delay=20, blend_duration=5)
+        assert new.current_idx == 0
+
+    def test_tap_during_blend_finishes_blend_and_opens_overlay(self):
+        started = datetime.datetime(2026, 5, 2, 12, 0, 25)
+        now = started + datetime.timedelta(seconds=2)
+        state = self._make_state(
+            mode=epic.MODE_BLENDING,
+            current_idx=1,
+            blend_started_at=started,
+        )
+        events = [mock.Mock(type=pygame.MOUSEBUTTONDOWN)]
+        new = epic.tick_state(state, events, now, blend_enabled=True, rotate_delay=20, blend_duration=5)
+        assert new.mode == epic.MODE_OVERLAY
+        assert new.current_idx == 2
+        assert new.blend_started_at is None
