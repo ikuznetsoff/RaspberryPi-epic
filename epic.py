@@ -305,15 +305,27 @@ def render_forecast_chart(screen, cache, now, x, y, width, height):
         bar_layer.fill(bar_color, rect=pygame.Rect(bar_x, height - bar_h, bar_w, bar_h))
     screen.blit(bar_layer, (x, y))
 
-    pts = []
+    rain_pts = []
+    for i, (_, prob) in enumerate(points):
+        if prob is None:
+            continue
+        px = int(x + i * step + step / 2)
+        py = int(y + height - (prob / 100.0) * height)
+        rain_pts.append((px, py))
+    if len(rain_pts) >= 2:
+        pygame.draw.lines(screen, (140, 180, 240), False, rain_pts, 2)
+        pygame.draw.aalines(screen, (140, 180, 240), False, rain_pts)
+
+    temp_pts = []
     for i, (t, _) in enumerate(points):
         if t is None:
             continue
         px = int(x + i * step + step / 2)
         py = int(y + height - ((t - t_min) / (t_max - t_min)) * height)
-        pts.append((px, py))
-    if len(pts) >= 2:
-        pygame.draw.aalines(screen, (245, 245, 245), False, pts, 2)
+        temp_pts.append((px, py))
+    if len(temp_pts) >= 2:
+        pygame.draw.lines(screen, (245, 245, 245), False, temp_pts, 3)
+        pygame.draw.aalines(screen, (245, 245, 245), False, temp_pts)
 
     if not pygame.font.get_init():
         pygame.font.init()
@@ -328,12 +340,18 @@ def render_forecast_chart(screen, cache, now, x, y, width, height):
         lx = max(x, min(lx, x + width - rendered.get_width()))
         screen.blit(rendered, (lx, label_y))
 
-    # Range label — placed inside the chart area (top-right) so it stays
-    # within the round-bezel safe zone on the Hyperpixel display.
+    # Top-right: temp range. Top-left: peak rain probability over the window.
     range_font = pygame.font.SysFont('dejavusans', 11)
     range_text = '{}°/{}°'.format(int(round(t_max)), int(round(t_min)))
     rendered = range_font.render(range_text, True, label_color)
     screen.blit(rendered, (x + width - rendered.get_width() - 2, y + 2))
+
+    valid_probs = [p for _, p in points if p is not None]
+    if valid_probs:
+        peak = max(valid_probs)
+        peak_text = '☔ {}%'.format(int(peak))
+        rendered = range_font.render(peak_text, True, (140, 180, 240))
+        screen.blit(rendered, (x + 2, y + 2))
     return True
 
 
