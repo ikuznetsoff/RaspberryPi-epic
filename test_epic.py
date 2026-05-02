@@ -805,3 +805,31 @@ class TestFetchWeather:
         with mock.patch('epic.requests.get', return_value=fake_response):
             cache = epic.fetch_weather(0.0, 0.0)
         assert cache['condition'] == '9999'
+
+
+# ============================================================
+# is_weather_stale
+# ============================================================
+
+
+class TestIsWeatherStale:
+    def test_no_cache_is_stale(self):
+        assert epic.is_weather_stale(None, refresh_min=30, now=datetime.datetime(2026, 5, 2, 12, 0)) is True
+
+    def test_empty_dict_is_stale(self):
+        assert epic.is_weather_stale({}, refresh_min=30, now=datetime.datetime(2026, 5, 2, 12, 0)) is True
+
+    def test_fresh_cache_not_stale(self):
+        cache = {'fetched_at': datetime.datetime(2026, 5, 2, 11, 50)}
+        now = datetime.datetime(2026, 5, 2, 12, 0)
+        assert epic.is_weather_stale(cache, refresh_min=30, now=now) is False
+
+    def test_old_cache_is_stale(self):
+        cache = {'fetched_at': datetime.datetime(2026, 5, 2, 11, 0)}
+        now = datetime.datetime(2026, 5, 2, 12, 0)
+        assert epic.is_weather_stale(cache, refresh_min=30, now=now) is True
+
+    def test_exact_boundary_not_stale(self):
+        cache = {'fetched_at': datetime.datetime(2026, 5, 2, 11, 30)}
+        now = datetime.datetime(2026, 5, 2, 12, 0)
+        assert epic.is_weather_stale(cache, refresh_min=30, now=now) is False

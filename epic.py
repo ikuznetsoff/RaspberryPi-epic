@@ -120,6 +120,15 @@ def fetch_weather(lat, lon):
     }
 
 
+def is_weather_stale(cache, refresh_min, now):
+    if not cache:
+        return True
+    fetched_at = cache.get('fetched_at')
+    if fetched_at is None:
+        return True
+    return (now - fetched_at) > datetime.timedelta(minutes=refresh_min)
+
+
 def get_epic_images_json():
     # Call the epic api
     response = requests.get("https://epic.gsfc.nasa.gov/api/natural")
