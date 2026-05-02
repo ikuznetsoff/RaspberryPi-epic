@@ -325,56 +325,6 @@ def save_photos(imageurls, screen=None):
     print("photos saved")
 
 
-def blend_between_photos(old_image, new_image, target_duration, screen=None):
-    if screen is None:
-        return
-    print("Attempting to blend between old and new images")
-
-    transparency = 0
-    # Place the old image down first
-    screen.blit(old_image, (0, 0))
-    # Set the new image to be completely transparent
-    new_image.set_alpha(transparency)
-    screen.blit(new_image, (0, 0))
-    pygame.display.flip()
-
-    while transparency < 255:
-        # Update transparency for new image
-        transparency += 1
-        new_image.set_alpha(transparency)
-
-        # Place both images down, old one first, new one with adjusted transparency second.
-        screen.blit(old_image, (0, 0))
-        screen.blit(new_image, (0, 0))
-        pygame.display.flip()
-        # Delay the loop to blend over the target duration (in seconds)
-        time.sleep(target_duration / 255)
-
-
-def rotate_photos(num_photos, rotate_delay, blend_enabled=False, blend_time=5, screen=None):
-    counter = 0
-    while counter < num_photos:
-        # First check if anyone's tried to quit the app while we've been rotating
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-
-        # Create a surface object and draw image on it.
-        new_image = pygame.image.load(r"./" + str(counter) + ".jpg")
-        if counter > 0 and blend_enabled and screen is not None:
-            old_image = pygame.image.load(r"./" + str(counter - 1) + ".jpg")
-            blend_between_photos(old_image, new_image, blend_time, screen)
-        elif screen is not None:
-            # Display image
-            screen.blit(new_image, (0, 0))
-            pygame.display.flip()
-
-        counter += 1
-
-        # How many seconds to wait between changing images
-        time.sleep(rotate_delay)
-
-
 def init_display():
     """Initialize pygame and create display surface."""
     import os
@@ -388,60 +338,146 @@ def init_display():
     return screen
 
 
+def _maybe_kick_tap_refresh(lat, lon, cache_ref, lock):
+    cache = cache_ref.get('value')
+    if not is_weather_stale(cache, WEATHER_TAP_REFRESH_MIN, datetime.datetime.now()):
+        return
+    if cache_ref.get('inflight'):
+        return
+    cache_ref['inflight'] = True
+
+    def _worker():
+        try:
+            new_cache = fetch_weather(lat, lon)
+            with lock:
+                cache_ref['value'] = new_cache
+        except Exception as exc:
+            print('tap-driven weather fetch failed:', exc)
+        finally:
+            cache_ref['inflight'] = False
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+
+
+def _weather_refresh_loop(lat, lon, cache_ref, lock):
+    while True:
+        try:
+            new_cache = fetch_weather(lat, lon)
+            with lock:
+                cache_ref['value'] = new_cache
+        except Exception as exc:
+            print('background weather fetch failed:', exc)
+        time.sleep(WEATHER_REFRESH_MIN * 60)
+
+
+def _maybe_check_for_new_images(state, screen, now):
+    if now < state.next_image_api_check_at:
+        return state
+    print(str(now) + ' Checking for new images.')
+    try:
+        image_data = get_epic_images_json()
+    except Exception as exc:
+        print('image API check failed:', exc)
+        return replace(state, next_image_api_check_at=now + datetime.timedelta(minutes=check_delay))
+    newest = image_data[0]['date'] if image_data else ''
+    if newest and newest != state.last_image_data:
+        print('Ooh! New Images! OLD=' + state.last_image_data + ' NEW=' + newest)
+        urls = create_image_urls(image_data)
+        save_photos(urls, screen)
+        return replace(
+            state,
+            num_photos=len(urls),
+            current_idx=0,
+            last_image_data=newest,
+            next_image_api_check_at=now + datetime.timedelta(minutes=check_delay),
+            next_photo_swap_at=now + datetime.timedelta(seconds=rotate_delay),
+        )
+    return replace(state, next_image_api_check_at=now + datetime.timedelta(minutes=check_delay))
+
+
 def main():
+    lat, lon, display_name = geocode_city(CITY_NAME)
+    print('Weather for: ' + display_name + ' (' + str(lat) + ', ' + str(lon) + ')')
+
     screen = init_display()
 
-    # Display loading image
-    image = pygame.image.load(r"./loading.jpg")
-    screen.blit(image, (0, 0))
-    pygame.display.flip()
+    try:
+        loading = pygame.image.load(r'./loading.jpg')
+        screen.blit(loading, (0, 0))
+        pygame.display.flip()
+    except Exception as exc:
+        print('loading splash skipped:', exc)
 
-    print("Checking for new photos every " + str(check_delay) + " minutes")
-    print("Rotating photos every " + str(rotate_delay) + " seconds")
+    print('Checking for new photos every ' + str(check_delay) + ' minutes')
+    print('Rotating photos every ' + str(rotate_delay) + ' seconds')
 
-    # Run until the user asks to quit
+    weather_cache_ref = {'value': None, 'inflight': False}
+    weather_lock = threading.Lock()
+
+    refresher = threading.Thread(
+        target=_weather_refresh_loop,
+        args=(lat, lon, weather_cache_ref, weather_lock),
+        daemon=True,
+    )
+    refresher.start()
+
+    now = datetime.datetime.now()
+    state = AppState(
+        mode=MODE_PHOTO,
+        current_idx=0,
+        num_photos=0,
+        next_photo_swap_at=now,
+        next_image_api_check_at=now,
+        overlay_dismiss_at=None,
+        blend_started_at=None,
+        last_image_data='',
+    )
+
+    clock = pygame.time.Clock()
     running = True
-    first_run = True
-    last_data = ""
-    newest_data = ""
-    last_check = datetime.datetime.now() - datetime.timedelta(hours=1)
-    num_photos = 0
 
     while running:
-        # Did anyone try to quit the app?
-        for event in pygame.event.get():
+        now = datetime.datetime.now()
+        events = pygame.event.get()
+
+        for event in events:
             if event.type == pygame.QUIT:
                 running = False
-                pygame.quit()
+                break
+        if not running:
+            break
 
-        # If we haven't checked for new images recently, check for new images
-        if last_check < datetime.datetime.now() - datetime.timedelta(minutes=check_delay) or first_run == True:
-            print(str(datetime.datetime.now()) + " Checking for new images.")
+        if any(e.type == pygame.MOUSEBUTTONDOWN for e in events):
+            _maybe_kick_tap_refresh(lat, lon, weather_cache_ref, weather_lock)
 
-            last_check = datetime.datetime.now()
-            first_run = False
+        state = _maybe_check_for_new_images(state, screen, now)
 
-            image_data = get_epic_images_json()
-            newest_data = image_data[0]["date"]
+        state = tick_state(
+            state, events, now,
+            blend_enabled=enable_blending,
+            rotate_delay=rotate_delay,
+            blend_duration=blending_duration,
+        )
 
-            print("OLD: " + last_data)
-            print("NEW: " + newest_data)
-
-            # If there are new images available, download them, then quickly display them all.
-            if last_data != newest_data:
-                print("Ooh! New Images!")
-                last_data = newest_data
-                imageurls = create_image_urls(image_data)
-                save_photos(imageurls, screen)
-                num_photos = len(imageurls)
-                rotate_photos(num_photos, 1, screen=screen)
+        if state.num_photos > 0:
+            current_img = pygame.image.load(r'./' + str(state.current_idx) + '.jpg')
+            if state.mode == MODE_BLENDING:
+                prev_idx = (state.current_idx - 1) % state.num_photos
+                old_img = pygame.image.load(r'./' + str(prev_idx) + '.jpg')
+                alpha = compute_blend_alpha(now, state.blend_started_at, blending_duration)
+                render_blend(screen, old_img, current_img, alpha)
             else:
-                print("No new images")
+                render_photo(screen, current_img)
 
-        # Show each photo in order.
-        rotate_photos(num_photos, rotate_delay, enable_blending, blending_duration, screen=screen)
+            if state.mode == MODE_OVERLAY:
+                with weather_lock:
+                    cache_snapshot = weather_cache_ref.get('value')
+                render_overlay(screen, cache_snapshot, now)
 
-    # Done! Time to quit.
+        pygame.display.flip()
+        clock.tick(30)
+
     pygame.quit()
 
 

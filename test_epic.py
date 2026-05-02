@@ -211,66 +211,6 @@ class TestSavePhotos:
 
 
 # ============================================================
-# blend_between_photos
-# ============================================================
-
-
-class TestBlendBetweenPhotos:
-    def test_no_crash_without_screen(self):
-        """blend_between_photos should return early when screen is None."""
-        old = pygame.Surface((480, 480))
-        new = pygame.Surface((480, 480))
-        # Should not raise
-        epic.blend_between_photos(old, new, 0.01, screen=None)
-
-    def test_blend_with_screen(self):
-        """blend_between_photos should run when given a real surface."""
-        screen = pygame.Surface((480, 480))
-        old = pygame.Surface((480, 480))
-        new = pygame.Surface((480, 480))
-        with mock.patch("epic.pygame.display.flip"):
-            epic.blend_between_photos(old, new, 0.001, screen=screen)
-
-    def test_alpha_reaches_full(self):
-        """After blending, new_image alpha should be 255."""
-        screen = pygame.Surface((480, 480))
-        old = pygame.Surface((480, 480))
-        new = pygame.Surface((480, 480))
-        with mock.patch("epic.pygame.display.flip"):
-            epic.blend_between_photos(old, new, 0.001, screen=screen)
-        # After blend loop, transparency should have reached 255
-        # (set_alpha was called with 255 as the last value)
-        assert new.get_alpha() == 255
-
-
-# ============================================================
-# rotate_photos
-# ============================================================
-
-
-class TestRotatePhotos:
-    def test_zero_photos(self):
-        """rotate_photos with 0 photos should return immediately."""
-        # Should not raise or hang
-        epic.rotate_photos(0, 0.001)
-
-    def test_rotation_loads_files(self, tmp_path):
-        """rotate_photos loads numbered jpg files."""
-        # Create fake image files
-        old_cwd = os.getcwd()
-        os.chdir(tmp_path)
-        try:
-            for i in range(3):
-                surf = pygame.Surface((480, 480))
-                pygame.image.save(surf, f"./{i}.jpg")
-            with mock.patch("epic.time.sleep"):
-                with mock.patch("epic.pygame.event.get", return_value=[]):
-                    epic.rotate_photos(3, 0.001, screen=None)
-        finally:
-            os.chdir(old_cwd)
-
-
-# ============================================================
 # init_display
 # ============================================================
 
@@ -313,8 +253,8 @@ class TestModuleImport:
         assert hasattr(epic, "get_epic_images_json")
         assert hasattr(epic, "create_image_urls")
         assert hasattr(epic, "save_photos")
-        assert hasattr(epic, "blend_between_photos")
-        assert hasattr(epic, "rotate_photos")
+        assert hasattr(epic, "tick_state")
+        assert hasattr(epic, "render_overlay")
         assert hasattr(epic, "init_display")
 
     def test_module_has_settings(self):
@@ -326,216 +266,6 @@ class TestModuleImport:
     def test_main_function_exists(self):
         """main() should be callable."""
         assert callable(epic.main)
-
-
-# ============================================================
-# rotate_photos — additional edge cases
-# ============================================================
-
-
-class TestRotatePhotosAdvanced:
-    def test_rotation_with_screen_displays_images(self, tmp_path):
-        """rotate_photos with screen should blit images."""
-        old_cwd = os.getcwd()
-        os.chdir(tmp_path)
-        try:
-            for i in range(2):
-                surf = pygame.Surface((480, 480))
-                pygame.image.save(surf, f"./{i}.jpg")
-            screen = pygame.Surface((480, 480))
-            with mock.patch("epic.time.sleep"):
-                with mock.patch("epic.pygame.event.get", return_value=[]):
-                    with mock.patch("epic.pygame.display.flip"):
-                        epic.rotate_photos(2, 0.001, screen=screen)
-        finally:
-            os.chdir(old_cwd)
-
-    def test_rotation_with_blending(self, tmp_path):
-        """rotate_photos with blending enabled should call blend_between_photos."""
-        old_cwd = os.getcwd()
-        os.chdir(tmp_path)
-        try:
-            for i in range(3):
-                surf = pygame.Surface((480, 480))
-                pygame.image.save(surf, f"./{i}.jpg")
-            screen = pygame.Surface((480, 480))
-            with mock.patch("epic.time.sleep"):
-                with mock.patch("epic.pygame.event.get", return_value=[]):
-                    with mock.patch("epic.pygame.display.flip"):
-                        epic.rotate_photos(3, 0.001, blend_enabled=True, blend_time=0.001, screen=screen)
-        finally:
-            os.chdir(old_cwd)
-
-    def test_rotation_quit_event(self, tmp_path):
-        """rotate_photos should handle QUIT event."""
-        old_cwd = os.getcwd()
-        os.chdir(tmp_path)
-        try:
-            surf = pygame.Surface((480, 480))
-            pygame.image.save(surf, "./0.jpg")
-            quit_event = pygame.event.Event(pygame.QUIT)
-            with mock.patch("epic.time.sleep"):
-                with mock.patch("epic.pygame.event.get", return_value=[quit_event]):
-                    with mock.patch("epic.pygame.quit"):
-                        epic.rotate_photos(1, 0.001, screen=None)
-        finally:
-            os.chdir(old_cwd)
-
-    def test_rotation_first_image_no_blend(self, tmp_path):
-        """First image in rotation should not blend (counter == 0)."""
-        old_cwd = os.getcwd()
-        os.chdir(tmp_path)
-        try:
-            surf = pygame.Surface((480, 480))
-            pygame.image.save(surf, "./0.jpg")
-            screen = pygame.Surface((480, 480))
-            with mock.patch("epic.time.sleep"):
-                with mock.patch("epic.pygame.event.get", return_value=[]):
-                    with mock.patch("epic.pygame.display.flip"):
-                        with mock.patch("epic.blend_between_photos") as mock_blend:
-                            epic.rotate_photos(1, 0.001, blend_enabled=True, screen=screen)
-                            mock_blend.assert_not_called()
-        finally:
-            os.chdir(old_cwd)
-
-
-# ============================================================
-# main() — integration tests with mocking
-# ============================================================
-
-
-class TestMain:
-    @mock.patch("epic.pygame.quit")
-    @mock.patch("epic.rotate_photos")
-    @mock.patch("epic.save_photos")
-    @mock.patch("epic.create_image_urls")
-    @mock.patch("epic.get_epic_images_json")
-    @mock.patch("epic.init_display")
-    @mock.patch("epic.pygame.display.flip")
-    @mock.patch("epic.pygame.image.load")
-    @mock.patch("epic.pygame.event.get")
-    def test_main_loop_new_images(
-        self,
-        mock_events,
-        mock_load,
-        mock_flip,
-        mock_init,
-        mock_json,
-        mock_urls,
-        mock_save,
-        mock_rotate,
-        mock_quit,
-    ):
-        """main() should download and display new images on first run."""
-        screen = pygame.Surface((480, 480))
-        mock_init.return_value = screen
-        mock_load.return_value = pygame.Surface((480, 480))
-
-        # First call: return events (empty), second: return QUIT
-        call_count = [0]
-
-        def side_effect_events():
-            call_count[0] += 1
-            if call_count[0] >= 3:
-                return [pygame.event.Event(pygame.QUIT)]
-            return []
-
-        mock_events.side_effect = side_effect_events
-
-        mock_json.return_value = [{"date": "2025-01-01 12:00:00", "image": "test"}]
-        mock_urls.return_value = ["http://example.com/test.jpg"]
-        mock_rotate.return_value = None
-
-        # Override check_delay to prevent long waits
-        old_delay = epic.check_delay
-        epic.check_delay = 0
-        try:
-            epic.main()
-        except SystemExit:
-            pass
-        finally:
-            epic.check_delay = old_delay
-
-        mock_json.assert_called()
-        mock_urls.assert_called()
-        mock_save.assert_called()
-
-    @mock.patch("epic.pygame.quit")
-    @mock.patch("epic.rotate_photos")
-    @mock.patch("epic.save_photos")
-    @mock.patch("epic.create_image_urls")
-    @mock.patch("epic.get_epic_images_json")
-    @mock.patch("epic.init_display")
-    @mock.patch("epic.pygame.display.flip")
-    @mock.patch("epic.pygame.image.load")
-    @mock.patch("epic.pygame.event.get")
-    def test_main_no_new_images(
-        self,
-        mock_events,
-        mock_load,
-        mock_flip,
-        mock_init,
-        mock_json,
-        mock_urls,
-        mock_save,
-        mock_rotate,
-        mock_quit,
-    ):
-        """main() should skip download when data hasn't changed."""
-        screen = pygame.Surface((480, 480))
-        mock_init.return_value = screen
-        mock_load.return_value = pygame.Surface((480, 480))
-
-        call_count = [0]
-        json_call_count = [0]
-
-        def side_effect_events():
-            call_count[0] += 1
-            if call_count[0] >= 4:
-                return [pygame.event.Event(pygame.QUIT)]
-            return []
-
-        mock_events.side_effect = side_effect_events
-
-        # Return same data each time — second time should be "no new images"
-        mock_json.return_value = [{"date": "2025-01-01 12:00:00", "image": "test"}]
-        mock_urls.return_value = ["http://example.com/test.jpg"]
-        mock_rotate.return_value = None
-
-        old_delay = epic.check_delay
-        epic.check_delay = 0
-        try:
-            epic.main()
-        except SystemExit:
-            pass
-        finally:
-            epic.check_delay = old_delay
-
-        # save_photos should be called only once (first run), not on repeat
-        assert mock_save.call_count == 1
-
-
-# ============================================================
-# blend_between_photos — edge cases
-# ============================================================
-
-
-class TestBlendEdgeCases:
-    def test_blend_zero_duration(self):
-        """Blend with very short duration should still complete."""
-        screen = pygame.Surface((480, 480))
-        old = pygame.Surface((480, 480))
-        new = pygame.Surface((480, 480))
-        with mock.patch("epic.pygame.display.flip"):
-            epic.blend_between_photos(old, new, 0.0001, screen=screen)
-
-    def test_blend_surfaces_are_correct_size(self):
-        """Blend should work with DISPLAY_SIZE surfaces."""
-        screen = pygame.Surface(epic.DISPLAY_SIZE)
-        old = pygame.Surface(epic.DISPLAY_SIZE)
-        new = pygame.Surface(epic.DISPLAY_SIZE)
-        with mock.patch("epic.pygame.display.flip"):
-            epic.blend_between_photos(old, new, 0.001, screen=screen)
 
 
 # ============================================================
@@ -1081,3 +811,59 @@ class TestRenderOverlay:
         cache['fetched_at'] = datetime.datetime(2026, 5, 2, 10, 0)
         now = datetime.datetime(2026, 5, 2, 12, 0, 0)
         epic.render_overlay(screen, cache, now)
+
+
+# ============================================================
+# main loop — smoke
+# ============================================================
+
+
+class TestMainLoopSmoke:
+    def test_main_exits_cleanly_on_quit_event(self, monkeypatch, tmp_path):
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            surf = pygame.Surface((480, 480))
+            pygame.image.save(surf, '0.jpg')
+            pygame.image.save(surf, 'loading.jpg')
+
+            monkeypatch.setattr(epic, 'geocode_city', lambda _: (52.23, 21.01, 'Warsaw'))
+            monkeypatch.setattr(
+                epic,
+                'fetch_weather',
+                lambda lat, lon: {
+                    'temp_c': 0,
+                    'weather_code': 0,
+                    'condition': 'Clear',
+                    'sunrise': '06:00',
+                    'sunset': '18:00',
+                    'rain_today': (0, 0.0),
+                    'rain_tomorrow': (0, 0.0),
+                    'fetched_at': datetime.datetime.now(),
+                },
+            )
+            monkeypatch.setattr(
+                epic,
+                'get_epic_images_json',
+                lambda: [{'date': '2026-05-02 12:00:00', 'image': 'x'}],
+            )
+            monkeypatch.setattr(epic, 'save_photos', lambda urls, screen=None: None)
+            monkeypatch.setattr(epic, 'init_display', lambda: pygame.Surface((480, 480)))
+            # Don't actually tear down pygame globals — the test module shares them.
+            monkeypatch.setattr(epic.pygame, 'quit', lambda: None)
+            monkeypatch.setattr(epic.pygame.display, 'flip', lambda: None)
+
+            ticks = {'n': 0}
+
+            def fake_event_get():
+                ticks['n'] += 1
+                if ticks['n'] >= 3:
+                    return [pygame.event.Event(pygame.QUIT)]
+                return []
+
+            monkeypatch.setattr(pygame.event, 'get', fake_event_get)
+
+            # Should return cleanly without raising.
+            epic.main()
+        finally:
+            os.chdir(old_cwd)
