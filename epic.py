@@ -70,6 +70,56 @@ def geocode_city(name):
     return float(hit['latitude']), float(hit['longitude']), hit.get('name', name)
 
 
+def _safe_index(seq, idx):
+    if seq is None:
+        return None
+    if idx >= len(seq):
+        return None
+    return seq[idx]
+
+
+def _parse_hhmm(iso_string):
+    if iso_string is None:
+        return None
+    return iso_string.split('T', 1)[1][:5] if 'T' in iso_string else iso_string
+
+
+def fetch_weather(lat, lon):
+    response = requests.get(
+        'https://api.open-meteo.com/v1/forecast',
+        params={
+            'latitude': lat,
+            'longitude': lon,
+            'current': 'temperature_2m,weather_code',
+            'daily': 'sunrise,sunset,precipitation_probability_max,precipitation_sum',
+            'forecast_days': 2,
+            'timezone': 'auto',
+            'temperature_unit': 'celsius',
+        },
+        timeout=HTTP_TIMEOUT,
+    )
+    response.raise_for_status()
+    data = response.json()
+    current = data.get('current', {})
+    daily = data.get('daily', {})
+    code = current.get('weather_code')
+    temp = current.get('temperature_2m')
+    sunrise_list = daily.get('sunrise', [])
+    sunset_list = daily.get('sunset', [])
+    prob_list = daily.get('precipitation_probability_max', [])
+    sum_list = daily.get('precipitation_sum', [])
+    return {
+        'temp_c': int(round(temp)) if temp is not None else None,
+        'weather_code': code,
+        'condition': weather_code_to_text(code),
+        'sunrise': _parse_hhmm(_safe_index(sunrise_list, 0)),
+        'sunset': _parse_hhmm(_safe_index(sunset_list, 0)),
+        'rain_today': (_safe_index(prob_list, 0), _safe_index(sum_list, 0)),
+        'rain_tomorrow': (_safe_index(prob_list, 1), _safe_index(sum_list, 1)),
+        'fetched_at': datetime.datetime.now(),
+    }
+
+
 def get_epic_images_json():
     # Call the epic api
     response = requests.get("https://epic.gsfc.nasa.gov/api/natural")

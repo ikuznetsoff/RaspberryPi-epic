@@ -708,3 +708,100 @@ class TestGeocodeCity:
         with mock.patch('epic.requests.get', side_effect=rq.Timeout('slow')):
             with pytest.raises(rq.Timeout):
                 epic.geocode_city('Warsaw')
+
+
+# ============================================================
+# fetch_weather
+# ============================================================
+
+
+class TestFetchWeather:
+    def _payload(self, **overrides):
+        base = {
+            'current': {
+                'temperature_2m': -7.6,
+                'weather_code': 2,
+            },
+            'daily': {
+                'sunrise': ['2026-05-02T06:42', '2026-05-03T06:40'],
+                'sunset': ['2026-05-02T19:08', '2026-05-03T19:10'],
+                'precipitation_probability_max': [60, 80],
+                'precipitation_sum': [2.0, 5.4],
+            },
+        }
+        for k, v in overrides.items():
+            base[k] = v
+        return base
+
+    def test_happy_path(self):
+        fake_response = mock.Mock()
+        fake_response.json.return_value = self._payload()
+        fake_response.raise_for_status = mock.Mock()
+        with mock.patch('epic.requests.get', return_value=fake_response) as get:
+            cache = epic.fetch_weather(52.23, 21.01)
+        assert cache['temp_c'] == -8
+        assert cache['weather_code'] == 2
+        assert cache['condition'] == 'Partly Cloudy'
+        assert cache['sunrise'] == '06:42'
+        assert cache['sunset'] == '19:08'
+        assert cache['rain_today'] == (60, 2.0)
+        assert cache['rain_tomorrow'] == (80, 5.4)
+        assert isinstance(cache['fetched_at'], datetime.datetime)
+        kwargs = get.call_args.kwargs
+        assert kwargs['timeout'] == epic.HTTP_TIMEOUT
+        assert kwargs['params']['latitude'] == 52.23
+        assert kwargs['params']['longitude'] == 21.01
+        assert kwargs['params']['forecast_days'] == 2
+
+    def test_missing_precip_probability(self):
+        payload = self._payload()
+        payload['daily']['precipitation_probability_max'] = [None, None]
+        fake_response = mock.Mock()
+        fake_response.json.return_value = payload
+        fake_response.raise_for_status = mock.Mock()
+        with mock.patch('epic.requests.get', return_value=fake_response):
+            cache = epic.fetch_weather(0.0, 0.0)
+        assert cache['rain_today'] == (None, 2.0)
+        assert cache['rain_tomorrow'] == (None, 5.4)
+
+    def test_missing_precip_sum(self):
+        payload = self._payload()
+        payload['daily']['precipitation_sum'] = [None, None]
+        fake_response = mock.Mock()
+        fake_response.json.return_value = payload
+        fake_response.raise_for_status = mock.Mock()
+        with mock.patch('epic.requests.get', return_value=fake_response):
+            cache = epic.fetch_weather(0.0, 0.0)
+        assert cache['rain_today'] == (60, None)
+        assert cache['rain_tomorrow'] == (80, None)
+
+    def test_only_one_forecast_day(self):
+        payload = self._payload()
+        payload['daily']['precipitation_probability_max'] = [60]
+        payload['daily']['precipitation_sum'] = [2.0]
+        payload['daily']['sunrise'] = ['2026-05-02T06:42']
+        payload['daily']['sunset'] = ['2026-05-02T19:08']
+        fake_response = mock.Mock()
+        fake_response.json.return_value = payload
+        fake_response.raise_for_status = mock.Mock()
+        with mock.patch('epic.requests.get', return_value=fake_response):
+            cache = epic.fetch_weather(0.0, 0.0)
+        assert cache['rain_today'] == (60, 2.0)
+        assert cache['rain_tomorrow'] == (None, None)
+
+    def test_timeout_propagates(self):
+        import requests as rq
+
+        with mock.patch('epic.requests.get', side_effect=rq.Timeout('slow')):
+            with pytest.raises(rq.Timeout):
+                epic.fetch_weather(0.0, 0.0)
+
+    def test_unknown_weather_code(self):
+        payload = self._payload()
+        payload['current']['weather_code'] = 9999
+        fake_response = mock.Mock()
+        fake_response.json.return_value = payload
+        fake_response.raise_for_status = mock.Mock()
+        with mock.patch('epic.requests.get', return_value=fake_response):
+            cache = epic.fetch_weather(0.0, 0.0)
+        assert cache['condition'] == '9999'
