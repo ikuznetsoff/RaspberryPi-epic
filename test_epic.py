@@ -950,3 +950,71 @@ class TestAppState:
         assert new.mode == epic.MODE_OVERLAY
         assert new.current_idx == 2
         assert new.blend_started_at is None
+
+
+# ============================================================
+# render_photo / render_blend single-frame helpers
+# ============================================================
+
+
+class TestRenderHelpers:
+    def _make_screen(self):
+        return pygame.Surface((480, 480))
+
+    def _make_image(self, color):
+        s = pygame.Surface((480, 480))
+        s.fill(color)
+        return s
+
+    def test_render_photo_blits_image(self):
+        screen = self._make_screen()
+        photo = self._make_image((10, 20, 30))
+        epic.render_photo(screen, photo)
+        assert screen.get_at((0, 0))[:3] == (10, 20, 30)
+
+    def test_render_blend_alpha_zero_shows_old(self):
+        screen = self._make_screen()
+        old = self._make_image((255, 0, 0))
+        new = self._make_image((0, 255, 0))
+        epic.render_blend(screen, old, new, alpha=0)
+        assert screen.get_at((0, 0))[:3] == (255, 0, 0)
+
+    def test_render_blend_alpha_full_shows_new(self):
+        screen = self._make_screen()
+        old = self._make_image((255, 0, 0))
+        new = self._make_image((0, 255, 0))
+        epic.render_blend(screen, old, new, alpha=255)
+        assert screen.get_at((0, 0))[:3] == (0, 255, 0)
+
+    def test_render_blend_clamps_alpha(self):
+        screen = self._make_screen()
+        old = self._make_image((255, 0, 0))
+        new = self._make_image((0, 255, 0))
+        epic.render_blend(screen, old, new, alpha=500)
+        assert screen.get_at((0, 0))[:3] == (0, 255, 0)
+        epic.render_blend(screen, old, new, alpha=-100)
+        assert screen.get_at((0, 0))[:3] == (255, 0, 0)
+
+    def test_compute_blend_alpha_start(self):
+        t0 = datetime.datetime(2026, 5, 2, 12, 0, 0)
+        assert epic.compute_blend_alpha(t0, t0, 5) == 0
+
+    def test_compute_blend_alpha_mid(self):
+        t0 = datetime.datetime(2026, 5, 2, 12, 0, 0)
+        mid = t0 + datetime.timedelta(seconds=2.5)
+        result = epic.compute_blend_alpha(mid, t0, 5)
+        assert 125 <= result <= 130
+
+    def test_compute_blend_alpha_end(self):
+        t0 = datetime.datetime(2026, 5, 2, 12, 0, 0)
+        end = t0 + datetime.timedelta(seconds=5)
+        assert epic.compute_blend_alpha(end, t0, 5) == 255
+
+    def test_compute_blend_alpha_past_end(self):
+        t0 = datetime.datetime(2026, 5, 2, 12, 0, 0)
+        past = t0 + datetime.timedelta(seconds=10)
+        assert epic.compute_blend_alpha(past, t0, 5) == 255
+
+    def test_compute_blend_alpha_none_started(self):
+        t0 = datetime.datetime(2026, 5, 2, 12, 0, 0)
+        assert epic.compute_blend_alpha(t0, None, 5) == 255

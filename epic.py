@@ -198,6 +198,25 @@ def tick_state(state, events, now, blend_enabled, rotate_delay, blend_duration):
     return state
 
 
+def render_photo(screen, image):
+    screen.blit(image, (0, 0))
+
+
+def render_blend(screen, old_image, new_image, alpha):
+    clamped = max(0, min(255, int(alpha)))
+    screen.blit(old_image, (0, 0))
+    new_image.set_alpha(clamped)
+    screen.blit(new_image, (0, 0))
+
+
+def compute_blend_alpha(now, started_at, duration_seconds):
+    if started_at is None or duration_seconds <= 0:
+        return 255
+    elapsed = (now - started_at).total_seconds()
+    fraction = elapsed / duration_seconds
+    return max(0, min(255, int(fraction * 255)))
+
+
 def get_epic_images_json():
     # Call the epic api
     response = requests.get("https://epic.gsfc.nasa.gov/api/natural")
