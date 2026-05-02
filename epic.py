@@ -156,6 +156,14 @@ def _select_next_24h(cache, now):
     return [(_safe_index(temps, j), _safe_index(probs, j)) for j in range(start_idx, end_idx)]
 
 
+def _get_temp_range(cache, now):
+    points = _select_next_24h(cache, now)
+    valid = [t for t, _ in points if t is not None]
+    if not valid:
+        return None
+    return int(round(min(valid))), int(round(max(valid)))
+
+
 def is_weather_stale(cache, refresh_min, now):
     if not cache:
         return True
@@ -340,12 +348,8 @@ def render_forecast_chart(screen, cache, now, x, y, width, height):
         lx = max(x, min(lx, x + width - rendered.get_width()))
         screen.blit(rendered, (lx, label_y))
 
-    # Top-right: temp range. Top-left: peak rain probability over the window.
+    # Top-left: peak rain probability over the window.
     range_font = pygame.font.SysFont('dejavusans', 11)
-    range_text = '{}°/{}°'.format(int(round(t_max)), int(round(t_min)))
-    rendered = range_font.render(range_text, True, label_color)
-    screen.blit(rendered, (x + width - rendered.get_width() - 2, y + 2))
-
     valid_probs = [p for _, p in points if p is not None]
     if valid_probs:
         peak = max(valid_probs)
@@ -401,7 +405,23 @@ def render_overlay(screen, cache, now):
         draw_centered(screen, cond_font, 'loading…', white, 260)
         return
 
-    draw_centered(screen, temp_font, _format_temp(cache.get('temp_c')), white, 190)
+    # Big current temp, centered.
+    temp_surface = temp_font.render(_format_temp(cache.get('temp_c')), True, white)
+    temp_rect = temp_surface.get_rect(center=(cx, 190))
+    screen.blit(temp_surface, temp_rect)
+
+    # Mini ↑max / ↓min stack to the right of the current temp.
+    rng = _get_temp_range(cache, now)
+    if rng is not None:
+        rng_min, rng_max = rng
+        rng_font = pygame.font.SysFont('dejavusans', 22)
+        rng_color = (200, 200, 200)
+        rng_x = temp_rect.right + 6
+        max_surface = rng_font.render('↑ {}°'.format(rng_max), True, rng_color)
+        min_surface = rng_font.render('↓ {}°'.format(rng_min), True, rng_color)
+        screen.blit(max_surface, (rng_x, temp_rect.centery - max_surface.get_height() - 2))
+        screen.blit(min_surface, (rng_x, temp_rect.centery + 2))
+
     draw_centered(screen, cond_font, cache.get('condition', '—'), white, 258)
     draw_centered(screen, small_font, _format_wind(cache.get('wind_kmh')), white, 290)
     draw_centered(screen, small_font, _format_sun(cache.get('sunrise'), cache.get('sunset')), white, 320)
