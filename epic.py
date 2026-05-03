@@ -555,6 +555,26 @@ def _present(surface):
     pygame.display.flip()
 
 
+def _install_sigusr1_tap():
+    """Wire SIGUSR1 to inject a MOUSEBUTTONDOWN event. Lets you toggle the
+    overlay from SSH with `pkill -USR1 -f epic.py`. POSIX only."""
+    try:
+        import signal
+    except ImportError:
+        return
+
+    if not hasattr(signal, "SIGUSR1"):
+        return
+
+    def _handler(_signum, _frame):
+        try:
+            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(0, 0)))
+        except pygame.error:
+            pass
+
+    signal.signal(signal.SIGUSR1, _handler)
+
+
 def _start_evdev_touch_reader():
     """Read /dev/input/eventN directly and inject pygame MOUSEBUTTONDOWN events.
 
@@ -647,6 +667,9 @@ def init_display():
         # SDL's dummy backend doesn't read input. Spawn a thread that watches the
         # touch device and injects MOUSEBUTTONDOWN events into pygame's queue.
         _start_evdev_touch_reader()
+        # Also wire SIGUSR1 so you can toggle the overlay over SSH:
+        # `pkill -USR1 -f epic.py` — useful when touch hardware is unreliable.
+        _install_sigusr1_tap()
         # The pygame surface we draw into.
         screen = pygame.display.set_mode(list(DISPLAY_SIZE))
         screen.fill((0, 0, 0))
