@@ -2,6 +2,7 @@ import datetime
 import io
 import json
 import os
+import struct
 import sys
 import threading
 import time
@@ -10,6 +11,13 @@ from urllib.request import urlopen
 
 import pygame
 import requests
+
+# Linux fb ioctl numbers (from <linux/fb.h>)
+FBIOGET_VSCREENINFO = 0x4600
+FBIOGET_FSCREENINFO = 0x4602
+
+# Module-level framebuffer state. Populated by init_display() when EPIC_FBDEV is set.
+_FB = None
 
 # Settings
 check_delay = 120  # minutes
@@ -482,8 +490,94 @@ def _is_windowed_dev_mode():
     return sys.platform in ("win32", "darwin")
 
 
+def _open_fb(path):
+    """Open a Linux framebuffer device, query its dimensions/bpp/stride,
+    and mmap its memory. Returns a dict with 'mm', 'xres', 'yres', 'bpp',
+    'line_length'. Linux-only — imports fcntl/mmap lazily."""
+    import fcntl
+    import mmap
+
+    fd = open(path, "r+b", buffering=0)
+    fix_buf = bytearray(80)
+    fcntl.ioctl(fd.fileno(), FBIOGET_FSCREENINFO, fix_buf)
+    smem_len = struct.unpack("I", bytes(fix_buf[20:24]))[0]
+    line_length = struct.unpack("I", bytes(fix_buf[44:48]))[0]
+
+    var_buf = bytearray(160)
+    fcntl.ioctl(fd.fileno(), FBIOGET_VSCREENINFO, var_buf)
+    xres, yres = struct.unpack("II", bytes(var_buf[:8]))
+    bpp = struct.unpack("I", bytes(var_buf[24:28]))[0]
+
+    mm = mmap.mmap(fd.fileno(), smem_len, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)
+    return {"fd": fd, "mm": mm, "xres": xres, "yres": yres, "bpp": bpp, "line_length": line_length}
+
+
+def _push_to_fb(surface, fb):
+    """Copy a pygame Surface into a mmapped framebuffer, converting pixel
+    format on the fly. Supports 16bpp RGB565 (numpy required) and 32bpp BGRA."""
+    if fb["bpp"] == 32:
+        data = pygame.image.tobytes(surface, "BGRA")
+        # Some fbs have stride padding; copy row by row if so.
+        row = fb["xres"] * 4
+        if fb["line_length"] == row:
+            fb["mm"][: len(data)] = data
+        else:
+            for y in range(fb["yres"]):
+                fb["mm"][y * fb["line_length"] : y * fb["line_length"] + row] = data[y * row : (y + 1) * row]
+    elif fb["bpp"] == 16:
+        try:
+            import numpy as np
+        except ImportError:
+            raise RuntimeError("16bpp framebuffer requires numpy: pip install numpy")
+        arr = pygame.surfarray.array3d(surface)  # (W, H, 3) uint8
+        r = (arr[:, :, 0].astype(np.uint16) >> 3) & 0x1F
+        g = (arr[:, :, 1].astype(np.uint16) >> 2) & 0x3F
+        b = (arr[:, :, 2].astype(np.uint16) >> 3) & 0x1F
+        rgb565 = (r << 11) | (g << 5) | b
+        rgb565 = np.ascontiguousarray(rgb565.swapaxes(0, 1))  # -> (H, W)
+        data = rgb565.tobytes()
+        row = fb["xres"] * 2
+        if fb["line_length"] == row:
+            fb["mm"][: len(data)] = data
+        else:
+            for y in range(fb["yres"]):
+                fb["mm"][y * fb["line_length"] : y * fb["line_length"] + row] = data[y * row : (y + 1) * row]
+    else:
+        raise RuntimeError("Unsupported bpp: " + str(fb["bpp"]))
+
+
+def _present(surface):
+    """Push the given surface to the active framebuffer if EPIC_FBDEV mode is on,
+    then call pygame.display.flip(). Safe to call when _FB is None."""
+    global _FB
+    if _FB is not None:
+        _push_to_fb(surface, _FB)
+    pygame.display.flip()
+
+
 def init_display():
-    """Initialize pygame and create display surface."""
+    """Initialize pygame and create display surface.
+
+    Three modes:
+      * EPIC_FBDEV=/dev/fbN -> render to in-memory surface, flip pushes to fb
+        directly (no SDL backend needed). Best for headless Pi with stripped SDL.
+      * EPIC_WINDOWED=1 (or win32/darwin) -> windowed dev mode.
+      * Otherwise -> SDL fullscreen.
+    """
+    global _FB
+    fbdev = os.environ.get("EPIC_FBDEV")
+    if fbdev:
+        os.environ["SDL_VIDEODRIVER"] = "dummy"
+        pygame.init()
+        pygame.display.init()
+        # Open the fb first so we can fail fast on permission/format issues.
+        _FB = _open_fb(fbdev)
+        # The pygame surface we draw into. SDL's dummy display surface is fine —
+        # we render onto it and copy to fb in _present().
+        screen = pygame.display.set_mode(list(DISPLAY_SIZE))
+        screen.fill((0, 0, 0))
+        return screen
+
     pygame.init()
     if sys.platform.startswith("linux"):
         os.environ["DISPLAY"] = ":0"
@@ -565,7 +659,7 @@ def main():
     try:
         loading = pygame.image.load(r'./loading.jpg')
         screen.blit(loading, (0, 0))
-        pygame.display.flip()
+        _present(screen)
     except Exception as exc:
         print('loading splash skipped:', exc)
 
@@ -640,7 +734,7 @@ def main():
                     cache_snapshot = weather_cache_ref.get('value')
                 render_overlay(screen, cache_snapshot, now)
 
-        pygame.display.flip()
+        _present(screen)
         clock.tick(30)
 
     pygame.quit()
