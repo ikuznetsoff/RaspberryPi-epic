@@ -109,6 +109,10 @@ User=root
 WorkingDirectory=$REPO_DIR
 Environment=EPIC_FBDEV=/dev/fb0
 Environment=EPIC_NO_TOUCH=1
+# Re-run panel SPI init right before pixels are pushed -- the boot-time
+# hyperpixel2r-init.service can fire before the panel's stable, leaving the
+# display dark even though /dev/fb0 receives bytes.
+ExecStartPre=/usr/bin/hyperpixel2r-init
 ExecStart=$REPO_DIR/venv/bin/python -u $REPO_DIR/epic.py
 Restart=on-failure
 RestartSec=5
