@@ -555,6 +555,47 @@ def _present(surface):
     pygame.display.flip()
 
 
+def _start_evdev_touch_reader():
+    """Read /dev/input/eventN directly and inject pygame MOUSEBUTTONDOWN events.
+
+    Required when running with SDL_VIDEODRIVER=dummy (EPIC_FBDEV mode), because
+    the dummy backend doesn't poll input devices. Set EPIC_TOUCH_DEV to override
+    the device path; default is /dev/input/event0."""
+    import struct
+
+    path = os.environ.get("EPIC_TOUCH_DEV", "/dev/input/event0")
+    # struct input_event { struct timeval time; __u16 type; __u16 code; __s32 value; }
+    # On 32-bit Linux 'l' is 4 bytes; on 64-bit it's 8. Use native size.
+    fmt = "llHHi"
+    size = struct.calcsize(fmt)
+    EV_KEY = 0x01
+    BTN_TOUCH = 0x14A
+
+    def _reader():
+        try:
+            fp = open(path, "rb", buffering=0)
+        except Exception as exc:
+            print("touch reader could not open " + path + ":", exc)
+            return
+        while True:
+            try:
+                data = fp.read(size)
+                if not data or len(data) < size:
+                    continue
+                _sec, _usec, type_, code, value = struct.unpack(fmt, data)
+                if type_ == EV_KEY and code == BTN_TOUCH and value == 1:
+                    try:
+                        pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(0, 0)))
+                    except pygame.error:
+                        pass
+            except Exception as exc:
+                print("touch reader error:", exc)
+                time.sleep(0.5)
+
+    t = threading.Thread(target=_reader, daemon=True)
+    t.start()
+
+
 def init_display():
     """Initialize pygame and create display surface.
 
@@ -572,8 +613,10 @@ def init_display():
         pygame.display.init()
         # Open the fb first so we can fail fast on permission/format issues.
         _FB = _open_fb(fbdev)
-        # The pygame surface we draw into. SDL's dummy display surface is fine —
-        # we render onto it and copy to fb in _present().
+        # SDL's dummy backend doesn't read input. Spawn a thread that watches the
+        # touch device and injects MOUSEBUTTONDOWN events into pygame's queue.
+        _start_evdev_touch_reader()
+        # The pygame surface we draw into.
         screen = pygame.display.set_mode(list(DISPLAY_SIZE))
         screen.fill((0, 0, 0))
         return screen
