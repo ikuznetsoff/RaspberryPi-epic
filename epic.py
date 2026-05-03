@@ -559,17 +559,23 @@ def _start_evdev_touch_reader():
     """Read /dev/input/eventN directly and inject pygame MOUSEBUTTONDOWN events.
 
     Required when running with SDL_VIDEODRIVER=dummy (EPIC_FBDEV mode), because
-    the dummy backend doesn't poll input devices. Set EPIC_TOUCH_DEV to override
-    the device path; default is /dev/input/event0."""
+    the dummy backend doesn't poll input devices. Reacts to BTN_TOUCH or
+    BTN_LEFT press events; debounces with EPIC_TOUCH_DEBOUNCE_MS (default 350)
+    to filter ft5x06 ghost-press repeats. Set EPIC_TOUCH_DEV to override the
+    device path; default is /dev/input/event0."""
     import struct
 
     path = os.environ.get("EPIC_TOUCH_DEV", "/dev/input/event0")
+    debounce_ms = int(os.environ.get("EPIC_TOUCH_DEBOUNCE_MS", "350"))
+    debounce_s = debounce_ms / 1000.0
+
     # struct input_event { struct timeval time; __u16 type; __u16 code; __s32 value; }
     # On 32-bit Linux 'l' is 4 bytes; on 64-bit it's 8. Use native size.
     fmt = "llHHi"
     size = struct.calcsize(fmt)
     EV_KEY = 0x01
     BTN_TOUCH = 0x14A
+    BTN_LEFT = 0x110
 
     def _reader():
         try:
@@ -577,17 +583,25 @@ def _start_evdev_touch_reader():
         except Exception as exc:
             print("touch reader could not open " + path + ":", exc)
             return
+        last_press_at = 0.0
         while True:
             try:
                 data = fp.read(size)
                 if not data or len(data) < size:
                     continue
                 _sec, _usec, type_, code, value = struct.unpack(fmt, data)
-                if type_ == EV_KEY and code == BTN_TOUCH and value == 1:
-                    try:
-                        pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(0, 0)))
-                    except pygame.error:
-                        pass
+                if type_ != EV_KEY or value != 1:
+                    continue
+                if code != BTN_TOUCH and code != BTN_LEFT:
+                    continue
+                now_t = time.time()
+                if now_t - last_press_at < debounce_s:
+                    continue
+                last_press_at = now_t
+                try:
+                    pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(0, 0)))
+                except pygame.error:
+                    pass
             except Exception as exc:
                 print("touch reader error:", exc)
                 time.sleep(0.5)
