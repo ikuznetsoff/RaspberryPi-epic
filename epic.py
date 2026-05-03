@@ -559,18 +559,28 @@ def _start_evdev_touch_reader():
     """Read /dev/input/eventN directly and inject pygame MOUSEBUTTONDOWN events.
 
     Required when running with SDL_VIDEODRIVER=dummy (EPIC_FBDEV mode), because
-    the dummy backend doesn't poll input devices. Reacts to BTN_TOUCH or
-    BTN_LEFT press events; debounces with EPIC_TOUCH_DEBOUNCE_MS (default 350)
-    to filter ft5x06 ghost-press repeats. Set EPIC_TOUCH_DEV to override the
-    device path; default is /dev/input/event0."""
+    the dummy backend doesn't poll input devices.
+
+    Filtering — designed to reject ft5x06 ghost-burst noise on the Hyperpixel
+    Round panel:
+      * Requires a 'quiet period' before accepting a press: any prior touch
+        event resets a quiet-watchdog. A press is treated as real only if no
+        events have arrived for at least EPIC_TOUCH_QUIET_MS (default 800ms).
+      * Then debounces consecutive accepted presses by EPIC_TOUCH_DEBOUNCE_MS
+        (default 350ms).
+      * Set EPIC_NO_TOUCH=1 to skip the reader entirely (rely on keyboard
+        events from another source, or no input at all).
+      * Set EPIC_TOUCH_DEV to override the device path (default /dev/input/event0)."""
+    if os.environ.get("EPIC_NO_TOUCH"):
+        print("touch reader disabled via EPIC_NO_TOUCH")
+        return
+
     import struct
 
     path = os.environ.get("EPIC_TOUCH_DEV", "/dev/input/event0")
-    debounce_ms = int(os.environ.get("EPIC_TOUCH_DEBOUNCE_MS", "350"))
-    debounce_s = debounce_ms / 1000.0
+    debounce_s = int(os.environ.get("EPIC_TOUCH_DEBOUNCE_MS", "350")) / 1000.0
+    quiet_s = int(os.environ.get("EPIC_TOUCH_QUIET_MS", "800")) / 1000.0
 
-    # struct input_event { struct timeval time; __u16 type; __u16 code; __s32 value; }
-    # On 32-bit Linux 'l' is 4 bytes; on 64-bit it's 8. Use native size.
     fmt = "llHHi"
     size = struct.calcsize(fmt)
     EV_KEY = 0x01
@@ -583,6 +593,7 @@ def _start_evdev_touch_reader():
         except Exception as exc:
             print("touch reader could not open " + path + ":", exc)
             return
+        last_event_at = 0.0
         last_press_at = 0.0
         while True:
             try:
@@ -590,11 +601,17 @@ def _start_evdev_touch_reader():
                 if not data or len(data) < size:
                     continue
                 _sec, _usec, type_, code, value = struct.unpack(fmt, data)
+                now_t = time.time()
+                # Track ANY event so noise activity resets the quiet window.
+                quiet_long_enough = (now_t - last_event_at) >= quiet_s
+                last_event_at = now_t
+
                 if type_ != EV_KEY or value != 1:
                     continue
                 if code != BTN_TOUCH and code != BTN_LEFT:
                     continue
-                now_t = time.time()
+                if not quiet_long_enough:
+                    continue
                 if now_t - last_press_at < debounce_s:
                     continue
                 last_press_at = now_t
