@@ -19,6 +19,7 @@ import pygame
 pygame.init()
 
 import epic
+import epic_api
 
 # ============================================================
 # Settings / defaults
@@ -1420,3 +1421,256 @@ class TestSetBacklight:
             run.return_value = mock.Mock(returncode=0)
             epic._set_backlight(True)
             assert run.call_args[0][0][2] == '12'
+
+
+# ============================================================
+# REST API + dashboard (epic_api.py)
+# ============================================================
+
+
+class TestApiBridge:
+    def test_push_drain_order(self):
+        b = epic_api.ApiBridge()
+        b.push_command({'cmd': 'a'})
+        b.push_command({'cmd': 'b'})
+        assert b.drain_commands() == [{'cmd': 'a'}, {'cmd': 'b'}]
+
+    def test_drain_empties(self):
+        b = epic_api.ApiBridge()
+        b.push_command({'cmd': 'a'})
+        b.drain_commands()
+        assert b.drain_commands() == []
+
+    def test_status_roundtrip_is_copy(self):
+        b = epic_api.ApiBridge()
+        b.set_status({'x': 1})
+        got = b.get_status()
+        assert got == {'x': 1}
+        got['x'] = 2
+        assert b.get_status() == {'x': 1}
+
+
+class TestDispatch:
+    def _provider(self):
+        return lambda: {'screen_on': True, 'mode': 'photo'}
+
+    def test_root_html(self):
+        code, ctype, body, cmd = epic_api.dispatch('GET', '/', self._provider())
+        assert code == 200
+        assert 'text/html' in ctype
+        assert b'<html' in body.lower()
+        assert cmd is None
+
+    def test_status_json(self):
+        code, ctype, body, cmd = epic_api.dispatch('GET', '/api/status', self._provider())
+        assert code == 200
+        assert 'application/json' in ctype
+        assert json.loads(body) == {'screen_on': True, 'mode': 'photo'}
+        assert cmd is None
+
+    def test_overlay_show(self):
+        code, _, body, cmd = epic_api.dispatch('POST', '/api/overlay/show', self._provider())
+        assert code == 200
+        assert cmd == {'cmd': 'overlay', 'action': 'show'}
+        assert json.loads(body)['ok'] is True
+
+    def test_overlay_hide(self):
+        _, _, _, cmd = epic_api.dispatch('POST', '/api/overlay/hide', self._provider())
+        assert cmd == {'cmd': 'overlay', 'action': 'hide'}
+
+    def test_overlay_toggle(self):
+        _, _, _, cmd = epic_api.dispatch('POST', '/api/overlay/toggle', self._provider())
+        assert cmd == {'cmd': 'overlay', 'action': 'toggle'}
+
+    def test_screen_on(self):
+        _, _, _, cmd = epic_api.dispatch('POST', '/api/screen/on', self._provider())
+        assert cmd == {'cmd': 'screen', 'action': 'on'}
+
+    def test_screen_off(self):
+        _, _, _, cmd = epic_api.dispatch('POST', '/api/screen/off', self._provider())
+        assert cmd == {'cmd': 'screen', 'action': 'off'}
+
+    def test_screen_auto(self):
+        _, _, _, cmd = epic_api.dispatch('POST', '/api/screen/auto', self._provider())
+        assert cmd == {'cmd': 'screen', 'action': 'auto'}
+
+    def test_image_refresh(self):
+        _, _, _, cmd = epic_api.dispatch('POST', '/api/image/refresh', self._provider())
+        assert cmd == {'cmd': 'refresh_image'}
+
+    def test_unknown_path_404(self):
+        code, _, body, cmd = epic_api.dispatch('GET', '/nope', self._provider())
+        assert code == 404
+        assert cmd is None
+        assert json.loads(body)['ok'] is False
+
+    def test_get_on_post_route_404(self):
+        code, _, _, cmd = epic_api.dispatch('GET', '/api/screen/off', self._provider())
+        assert code == 404
+        assert cmd is None
+
+
+class TestResolveScreenOn:
+    def test_on(self):
+        assert epic.resolve_screen_on('on', False) is True
+
+    def test_off(self):
+        assert epic.resolve_screen_on('off', True) is False
+
+    def test_auto_follows_schedule(self):
+        assert epic.resolve_screen_on('auto', True) is True
+        assert epic.resolve_screen_on('auto', False) is False
+
+
+class TestApplyOverlayCommand:
+    def _state(self, mode):
+        now = datetime.datetime(2026, 5, 30, 12, 0)
+        return epic.AppState(
+            mode=mode,
+            current_idx=0,
+            num_photos=3,
+            next_photo_swap_at=now,
+            next_image_api_check_at=now,
+            overlay_dismiss_at=None,
+            blend_started_at=None,
+            last_image_data='x',
+        )
+
+    NOW = datetime.datetime(2026, 5, 30, 12, 0)
+
+    def test_show(self):
+        s = epic.apply_overlay_command(self._state(epic.MODE_PHOTO), 'show', self.NOW)
+        assert s.mode == epic.MODE_OVERLAY
+        assert s.overlay_dismiss_at is None
+
+    def test_hide(self):
+        s = epic.apply_overlay_command(self._state(epic.MODE_OVERLAY), 'hide', self.NOW)
+        assert s.mode == epic.MODE_PHOTO
+
+    def test_toggle_from_photo(self):
+        s = epic.apply_overlay_command(self._state(epic.MODE_PHOTO), 'toggle', self.NOW)
+        assert s.mode == epic.MODE_OVERLAY
+        assert s.overlay_dismiss_at is None
+
+    def test_toggle_from_overlay(self):
+        s = epic.apply_overlay_command(self._state(epic.MODE_OVERLAY), 'toggle', self.NOW)
+        assert s.mode == epic.MODE_PHOTO
+
+
+class TestBuildStatus:
+    def _state(self):
+        now = datetime.datetime(2026, 5, 30, 12, 0)
+        return epic.AppState(
+            mode=epic.MODE_PHOTO,
+            current_idx=1,
+            num_photos=4,
+            next_photo_swap_at=now,
+            next_image_api_check_at=now,
+            overlay_dismiss_at=None,
+            blend_started_at=None,
+            last_image_data='2026-05-30 09:00:00',
+        )
+
+    def test_with_weather_is_json(self):
+        weather = {
+            'temp_c': 17,
+            'condition': 'Rain',
+            'wind_kmh': 9,
+            'fetched_at': datetime.datetime(2026, 5, 30, 11, 30),
+        }
+        st = epic.build_status(self._state(), weather, True, 'auto', datetime.time(8, 0), datetime.time(22, 0))
+        assert st['screen_on'] is True
+        assert st['screen_override'] == 'auto'
+        assert st['weather']['temp_c'] == 17
+        assert st['weather']['fetched_at'] == '2026-05-30 11:30'
+        assert st['last_image_date'] == '2026-05-30 09:00:00'
+        assert st['screen_on_time'] == '08:00'
+        json.dumps(st)
+
+    def test_without_weather(self):
+        st = epic.build_status(self._state(), None, False, 'off', datetime.time(8, 0), datetime.time(22, 0))
+        assert st['weather'] is None
+        assert st['screen_on'] is False
+        assert st['screen_override'] == 'off'
+        json.dumps(st)
+
+
+class TestForceImageRefresh:
+    def _state(self, last):
+        future = datetime.datetime(2030, 1, 1)
+        return epic.AppState(
+            mode=epic.MODE_PHOTO,
+            current_idx=0,
+            num_photos=1,
+            next_photo_swap_at=future,
+            next_image_api_check_at=future,
+            overlay_dismiss_at=None,
+            blend_started_at=None,
+            last_image_data=last,
+        )
+
+    @mock.patch('epic.save_photos')
+    @mock.patch('epic.get_epic_images_json')
+    def test_force_redownloads_same_date(self, mock_json, mock_save):
+        mock_json.return_value = [{'date': '2026-05-30 09:00:00', 'image': 'img'}]
+        now = datetime.datetime(2026, 5, 30, 10, 0)
+        state = self._state('2026-05-30 09:00:00')
+        out = epic._maybe_check_for_new_images(state, None, now, force=True)
+        mock_save.assert_called_once()
+        assert out.num_photos == 1
+
+    @mock.patch('epic.save_photos')
+    @mock.patch('epic.get_epic_images_json')
+    def test_no_force_respects_time_gate(self, mock_json, mock_save):
+        now = datetime.datetime(2026, 5, 30, 10, 0)
+        state = self._state('old')
+        epic._maybe_check_for_new_images(state, None, now, force=False)
+        mock_json.assert_not_called()
+        mock_save.assert_not_called()
+
+
+class TestApiServerIntegration:
+    """End-to-end over a real loopback socket — covers the handler + starter."""
+
+    def _serve(self):
+        bridge = epic_api.ApiBridge()
+        bridge.set_status({'screen_on': True, 'mode': 'photo', 'weather': None})
+        server = epic_api.start_api_server(bridge, '127.0.0.1', 0)
+        port = server.server_address[1]
+        return bridge, server, port
+
+    def _get(self, port, path, method='GET'):
+        import urllib.request
+
+        data = b'' if method == 'POST' else None
+        req = urllib.request.Request('http://127.0.0.1:' + str(port) + path, data=data, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, resp.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read()
+
+    def test_root_and_status_and_command(self):
+        bridge, server, port = self._serve()
+        try:
+            code, body = self._get(port, '/')
+            assert code == 200
+            assert b'<html' in body.lower()
+
+            code, body = self._get(port, '/api/status')
+            assert code == 200
+            assert json.loads(body)['mode'] == 'photo'
+
+            code, body = self._get(port, '/api/screen/off', method='POST')
+            assert code == 200
+            assert bridge.drain_commands() == [{'cmd': 'screen', 'action': 'off'}]
+
+            code, _ = self._get(port, '/nope')
+            assert code == 404
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_start_returns_none_on_bad_port(self):
+        bridge = epic_api.ApiBridge()
+        assert epic_api.start_api_server(bridge, '127.0.0.1', -1) is None

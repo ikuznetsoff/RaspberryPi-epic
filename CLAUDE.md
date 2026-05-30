@@ -31,13 +31,18 @@ remotely instead.
   `08:00`–`22:00`, off otherwise). Going dark pushes a black frame and makes a
   best-effort `pinctrl` backlight-off; input is ignored while off and the loop
   idles at 4 FPS. See "Night mode" below.
+- REST API + dashboard: an in-process HTTP server (stdlib, port 8080) lets Home
+  Assistant or a browser show/hide the weather overlay, force the screen
+  on/off/auto, and force-load the newest EPIC image. See "REST API / dashboard"
+  below.
 
 ## Repository Structure
 
 ```
 .
-├── epic.py                              # Main application (single-file)
-├── test_epic.py                         # 153 pytest tests (pure logic ~fully covered)
+├── epic.py                              # Main application (render loop + state)
+├── epic_api.py                          # HTTP REST API + dashboard (stdlib http.server)
+├── test_epic.py                         # 180 pytest tests (pure logic ~fully covered)
 ├── requirements.txt                     # pygame, requests
 ├── start-epic.sh                        # Startup script (sets brightness, launches)
 ├── brightness.sh                        # WiringPi-based PWM control (broken on Trixie)
@@ -55,8 +60,10 @@ remotely instead.
         └── plans/2026-05-02-interactive-weather-overlay-plan.md
 ```
 
-Single source file: `epic.py`. Single test file: `test_epic.py`. Keep it that
-way unless there's a strong reason to split.
+App + render/state logic live in `epic.py`; the HTTP control surface is split
+into `epic_api.py` (a REST server + dashboard is the "strong reason" exception).
+All tests stay in `test_epic.py`. Keep it this way unless there's a strong
+reason to split further.
 
 ## Tech Stack
 
@@ -69,7 +76,8 @@ way unless there's a strong reason to split.
   `struct`, `subprocess`, `threading`, `dataclasses`, `urllib.request`,
   `signal`, `fcntl`, `mmap` (the last two only used inside `_open_fb`, lazily
   imported so tests can run on Windows). `subprocess` is used only by
-  `_set_backlight` to shell out to `pinctrl`.
+  `_set_backlight` to shell out to `pinctrl`. `epic_api.py` adds
+  `http.server`, `collections`, `json`, `threading` — all stdlib, no new deps.
 - **External APIs:**
   - NASA EPIC: `https://epic.gsfc.nasa.gov/api/natural` + archive at
     `https://epic.gsfc.nasa.gov/archive/natural/...`
@@ -85,11 +93,13 @@ The file is single-file but logically structured in this top-to-bottom order:
    `rotate_delay`, `enable_blending`, `blending_duration`, `CITY_NAME`,
    `WEATHER_REFRESH_MIN`, `WEATHER_TAP_REFRESH_MIN`, `HTTP_TIMEOUT`,
    `OVERLAY_AUTO_DISMISS_SEC`, `SCREEN_ON`, `SCREEN_OFF`, `NIGHT_MODE`,
-   `BACKLIGHT_GPIO`, `DISPLAY_SIZE`, `CROP_SIZE`, `CROP_OFFSET`,
-   `WMO_CODES` mapping, fb ioctl numbers, `_FB` global.
+   `BACKLIGHT_GPIO`, `API_HOST`, `API_PORT`, `DISPLAY_SIZE`, `CROP_SIZE`,
+   `CROP_OFFSET`, `WMO_CODES` mapping, fb ioctl numbers, `_FB` global.
 2. **Helpers:** `weather_code_to_text`, `geocode_city`, `_safe_index`,
    `_parse_hhmm`, `_parse_clock`, `fetch_weather`, `is_weather_stale`,
-   `is_screen_on`, `night_transition` (the last three pure).
+   `is_screen_on`, `night_transition`, `resolve_screen_on`,
+   `apply_overlay_command`, `build_status` (all pure except the fetch/geocode
+   I/O ones).
 3. **State machine:** `MODE_PHOTO`/`MODE_BLENDING`/`MODE_OVERLAY` constants,
    `AppState` dataclass, `_advance_photo`, `tick_state` (pure function — the
    primary unit-test seam).
@@ -160,6 +170,47 @@ override so a per-Pi schedule needs no code edit:
 
 A malformed `EPIC_SCREEN_ON` / `EPIC_SCREEN_OFF` makes `_parse_clock` raise at
 startup (fail fast on a bad schedule, before the loop).
+
+### REST API / dashboard (`epic_api.py`)
+
+An HTTP control surface for Home Assistant + a browser, built on the **stdlib
+`http.server`** (no new deps — FastAPI was rejected because pydantic-core has no
+armv6 wheels). The server runs on a **daemon thread**; render + state stay on
+the main thread.
+
+The two sides communicate through `epic_api.ApiBridge` (thread-safe):
+- **Commands** (API → loop): a lock-guarded deque. Handlers `push_command`; the
+  main loop `drain_commands()` once per frame and applies each.
+- **Status** (loop → API): a lock-guarded dict. The loop publishes
+  `build_status(...)` each frame; `GET /api/status` returns the latest.
+
+`dispatch(method, path, status_provider)` is a **pure** router returning
+`(code, content_type, body, command|None)` — unit-tested without sockets. The
+`HTTPServer` carries the bridge as `server.bridge`; the handler reads it,
+enqueues any command, and writes the response. A bad/unavailable port makes
+`start_api_server` return `None` and the app runs without the API rather than
+crashing.
+
+Endpoints: `GET /` (dashboard), `GET /api/status` (JSON for HA sensors),
+`POST /api/overlay/{show,hide,toggle}`, `POST /api/screen/{on,off,auto}`,
+`POST /api/image/refresh`.
+
+Main-loop integration: each frame drains commands → overlay via
+`apply_overlay_command`, screen via a sticky `screen_override`
+(`on`/`off`/`auto`), image via a `force_image_refresh` flag.
+`resolve_screen_on(override, scheduled_on)` layers the override **on top of** the
+night schedule — so `auto` follows feature 1's schedule, while HA `off`/`on`
+forces dark/lit anytime (sticky until set back to `auto`). API overlay `show`
+has **no** 60 s auto-dismiss (unlike a tap) — HA owns the lifecycle.
+
+| Constant | Default | Env override | Meaning |
+|---|---|---|---|
+| `API_HOST` | `'0.0.0.0'` | `EPIC_API_HOST` | Bind address |
+| `API_PORT` | `8080` | `EPIC_API_PORT` | Listen port |
+| — | — | `EPIC_API_DISABLE=1` | Don't start the server |
+
+HA wiring (`rest_command` + REST sensor against `/api/status`) is in
+`docs/superpowers/specs/2026-05-30-rest-api-dashboard-design.md`.
 
 ### Weather threading
 
@@ -243,7 +294,7 @@ EPIC_FBDEV=/dev/fb0 sudo -E env "PATH=$PATH" python -u epic.py
 
 ### Tests:
 ```bash
-pytest -q                                # 153 tests, ~1.5s on a laptop
+pytest -q                                # 180 tests, ~3s on a laptop
 pytest --cov=epic --cov-report=term      # ~77% overall; pure logic ~fully covered
 ```
 
@@ -338,8 +389,9 @@ launch manually over SSH after stopping `getty@tty1.service`.
 
 ## Key Conventions
 
-- **Single-file architecture:** All app logic in `epic.py`. All tests in
-  `test_epic.py`. Keep it that way unless there's a strong reason.
+- **Few-file architecture:** App + render/state in `epic.py`; the HTTP control
+  surface in `epic_api.py` (the one justified split). All tests in
+  `test_epic.py`. Don't add more files without a strong reason.
 - **Settings at the top:** All knobs are module-level constants near the top
   of `epic.py`. Don't bury config in nested code.
 - **TDD:** Pure logic and helpers are fully tested; the framebuffer/touch/
@@ -374,8 +426,11 @@ this repo (per-Pi system config).
 | Run app (Pi production) | `EPIC_FBDEV=/dev/fb0 EPIC_NO_TOUCH=1 sudo -E env "PATH=$PATH" python -u epic.py` |
 | Run app (dev, any OS) | `python -u epic.py` (windowed on win32/darwin, fullscreen on Linux desktop) |
 | Toggle overlay over SSH | `pkill -USR1 -f epic.py` |
+| Open control dashboard | browse to `http://<pi-ip>:8080/` |
+| API: force screen off | `curl -XPOST http://<pi-ip>:8080/api/screen/off` |
+| API: load latest image | `curl -XPOST http://<pi-ip>:8080/api/image/refresh` |
 | Run tests | `pytest -q` |
-| Run tests with coverage | `pytest --cov=epic --cov-report=term-missing` |
+| Run tests with coverage | `pytest --cov=epic --cov=epic_api --cov-report=term-missing` |
 | Format (Linux) | `isort . --sp=.isort.cfg && black . --config=pyproject.toml` |
 | Format (Windows) | `format_source.cmd` |
 | Sanity-parse epic.py | `python -c "import ast; ast.parse(open('epic.py').read()); print('OK')"` |
@@ -454,7 +509,7 @@ curl -s -X POST "https://api.telegram.org/bot$BOT/sendMessage" \
 
 ### Rules
 - Single issue per loop run.
-- Keep single-file architecture (epic.py only). Tests in test_epic.py.
+- Keep the few-file architecture (epic.py + epic_api.py). Tests in test_epic.py.
 - No new dependencies unless explicitly required by the issue.
 - Post to Telegram topic 7 (🗂 Проекты), not a dedicated channel.
 - Don't add backwards-compat shims for removed code.

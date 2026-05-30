@@ -13,6 +13,8 @@ from urllib.request import urlopen
 import pygame
 import requests
 
+import epic_api
+
 # Linux fb ioctl numbers (from <linux/fb.h>)
 FBIOGET_VSCREENINFO = 0x4600
 FBIOGET_FSCREENINFO = 0x4602
@@ -38,6 +40,10 @@ SCREEN_ON = os.environ.get('EPIC_SCREEN_ON', '08:00')
 SCREEN_OFF = os.environ.get('EPIC_SCREEN_OFF', '22:00')
 NIGHT_MODE = not os.environ.get('EPIC_NIGHT_DISABLE')
 BACKLIGHT_GPIO = int(os.environ.get('EPIC_BACKLIGHT_GPIO', '19'))
+
+# REST API / dashboard settings
+API_HOST = os.environ.get('EPIC_API_HOST', '0.0.0.0')
+API_PORT = int(os.environ.get('EPIC_API_PORT', '8080'))
 
 DISPLAY_SIZE = (480, 480)
 CROP_SIZE = 830
@@ -210,6 +216,48 @@ def night_transition(prev_on, now_on):
     if not prev_on and now_on:
         return 'wake'
     return None
+
+
+def resolve_screen_on(override, scheduled_on):
+    if override == 'on':
+        return True
+    if override == 'off':
+        return False
+    return scheduled_on
+
+
+def apply_overlay_command(state, action, now):
+    if action == 'show':
+        return replace(state, mode=MODE_OVERLAY, overlay_dismiss_at=None)
+    if action == 'hide':
+        return replace(state, mode=MODE_PHOTO, overlay_dismiss_at=None)
+    if state.mode == MODE_OVERLAY:
+        return replace(state, mode=MODE_PHOTO, overlay_dismiss_at=None)
+    return replace(state, mode=MODE_OVERLAY, overlay_dismiss_at=None)
+
+
+def build_status(state, weather, screen_on, override, on_time, off_time):
+    weather_out = None
+    if weather:
+        fetched = weather.get('fetched_at')
+        weather_out = {
+            'temp_c': weather.get('temp_c'),
+            'condition': weather.get('condition'),
+            'wind_kmh': weather.get('wind_kmh'),
+            'fetched_at': fetched.strftime('%Y-%m-%d %H:%M') if fetched else None,
+        }
+    return {
+        'screen_on': screen_on,
+        'screen_override': override,
+        'night_mode': NIGHT_MODE,
+        'screen_on_time': on_time.strftime('%H:%M'),
+        'screen_off_time': off_time.strftime('%H:%M'),
+        'mode': state.mode,
+        'num_photos': state.num_photos,
+        'current_idx': state.current_idx,
+        'last_image_date': state.last_image_data,
+        'weather': weather_out,
+    }
 
 
 MODE_PHOTO = 'photo'
@@ -772,8 +820,8 @@ def _weather_refresh_loop(lat, lon, cache_ref, lock):
         time.sleep(WEATHER_REFRESH_MIN * 60)
 
 
-def _maybe_check_for_new_images(state, screen, now):
-    if now < state.next_image_api_check_at:
+def _maybe_check_for_new_images(state, screen, now, force=False):
+    if not force and now < state.next_image_api_check_at:
         return state
     print(str(now) + ' Checking for new images.')
     try:
@@ -782,7 +830,7 @@ def _maybe_check_for_new_images(state, screen, now):
         print('image API check failed:', exc)
         return replace(state, next_image_api_check_at=now + datetime.timedelta(minutes=check_delay))
     newest = image_data[0]['date'] if image_data else ''
-    if newest and newest != state.last_image_data:
+    if newest and (force or newest != state.last_image_data):
         print('Ooh! New Images! OLD=' + state.last_image_data + ' NEW=' + newest)
         urls = create_image_urls(image_data)
         save_photos(urls, screen)
@@ -841,6 +889,12 @@ def main():
     black_frame.fill((0, 0, 0))
     screen_on = True
 
+    api_bridge = epic_api.ApiBridge()
+    if not os.environ.get('EPIC_API_DISABLE'):
+        epic_api.start_api_server(api_bridge, API_HOST, API_PORT)
+    screen_override = 'auto'
+    force_image_refresh = False
+
     clock = pygame.time.Clock()
     running = True
 
@@ -858,7 +912,16 @@ def main():
         if not running:
             break
 
-        now_on = (not NIGHT_MODE) or is_screen_on(now, on_t, off_t)
+        for cmd in api_bridge.drain_commands():
+            if cmd['cmd'] == 'overlay':
+                state = apply_overlay_command(state, cmd['action'], now)
+            elif cmd['cmd'] == 'screen':
+                screen_override = cmd['action']
+            elif cmd['cmd'] == 'refresh_image':
+                force_image_refresh = True
+
+        scheduled_on = (not NIGHT_MODE) or is_screen_on(now, on_t, off_t)
+        now_on = resolve_screen_on(screen_override, scheduled_on)
         edge = night_transition(screen_on, now_on)
         if edge == 'sleep':
             _set_backlight(False)
@@ -869,6 +932,10 @@ def main():
             _set_backlight(True)
         screen_on = now_on
 
+        with weather_lock:
+            _weather_snapshot = weather_cache_ref.get('value')
+        api_bridge.set_status(build_status(state, _weather_snapshot, now_on, screen_override, on_t, off_t))
+
         if not now_on:
             clock.tick(4)
             continue
@@ -876,7 +943,8 @@ def main():
         if any(e.type == pygame.MOUSEBUTTONDOWN for e in events):
             _maybe_kick_tap_refresh(lat, lon, weather_cache_ref, weather_lock)
 
-        state = _maybe_check_for_new_images(state, screen, now)
+        state = _maybe_check_for_new_images(state, screen, now, force=force_image_refresh)
+        force_image_refresh = False
 
         state = tick_state(
             state,
