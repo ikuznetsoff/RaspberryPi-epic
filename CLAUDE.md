@@ -27,13 +27,17 @@ remotely instead.
   rain. The overlay auto-dismisses after 60 s if the second tap is missed.
 - Weather data: Open-Meteo, no API key. Geocoded once at startup from
   `CITY_NAME` (default `'Warsaw'`).
+- Night mode: a daily schedule blanks the screen overnight (default on
+  `08:00`–`22:00`, off otherwise). Going dark pushes a black frame and makes a
+  best-effort `pinctrl` backlight-off; input is ignored while off and the loop
+  idles at 4 FPS. See "Night mode" below.
 
 ## Repository Structure
 
 ```
 .
 ├── epic.py                              # Main application (single-file)
-├── test_epic.py                         # 121 pytest tests, ≥96% coverage
+├── test_epic.py                         # 153 pytest tests (pure logic ~fully covered)
 ├── requirements.txt                     # pygame, requests
 ├── start-epic.sh                        # Startup script (sets brightness, launches)
 ├── brightness.sh                        # WiringPi-based PWM control (broken on Trixie)
@@ -62,9 +66,10 @@ way unless there's a strong reason to split.
   `requests`. Optional: `numpy` for 16bpp framebuffer mode (not needed on the
   current Pi setup, which is 32bpp).
 - **Standard library:** `datetime`, `time`, `io`, `json`, `os`, `sys`,
-  `struct`, `threading`, `dataclasses`, `urllib.request`, `signal`, `fcntl`,
-  `mmap` (the last two only used inside `_open_fb`, lazily imported so tests
-  can run on Windows).
+  `struct`, `subprocess`, `threading`, `dataclasses`, `urllib.request`,
+  `signal`, `fcntl`, `mmap` (the last two only used inside `_open_fb`, lazily
+  imported so tests can run on Windows). `subprocess` is used only by
+  `_set_backlight` to shell out to `pinctrl`.
 - **External APIs:**
   - NASA EPIC: `https://epic.gsfc.nasa.gov/api/natural` + archive at
     `https://epic.gsfc.nasa.gov/archive/natural/...`
@@ -79,10 +84,12 @@ The file is single-file but logically structured in this top-to-bottom order:
 1. **Imports + module constants.** All settings at the top: `check_delay`,
    `rotate_delay`, `enable_blending`, `blending_duration`, `CITY_NAME`,
    `WEATHER_REFRESH_MIN`, `WEATHER_TAP_REFRESH_MIN`, `HTTP_TIMEOUT`,
-   `OVERLAY_AUTO_DISMISS_SEC`, `DISPLAY_SIZE`, `CROP_SIZE`, `CROP_OFFSET`,
+   `OVERLAY_AUTO_DISMISS_SEC`, `SCREEN_ON`, `SCREEN_OFF`, `NIGHT_MODE`,
+   `BACKLIGHT_GPIO`, `DISPLAY_SIZE`, `CROP_SIZE`, `CROP_OFFSET`,
    `WMO_CODES` mapping, fb ioctl numbers, `_FB` global.
 2. **Helpers:** `weather_code_to_text`, `geocode_city`, `_safe_index`,
-   `_parse_hhmm`, `fetch_weather`, `is_weather_stale`.
+   `_parse_hhmm`, `_parse_clock`, `fetch_weather`, `is_weather_stale`,
+   `is_screen_on`, `night_transition` (the last three pure).
 3. **State machine:** `MODE_PHOTO`/`MODE_BLENDING`/`MODE_OVERLAY` constants,
    `AppState` dataclass, `_advance_photo`, `tick_state` (pure function — the
    primary unit-test seam).
@@ -93,7 +100,7 @@ The file is single-file but logically structured in this top-to-bottom order:
 5. **EPIC + image fetching:** `get_epic_images_json`, `create_image_urls`,
    `save_photos`.
 6. **Display + framebuffer:** `_is_windowed_dev_mode`, `_open_fb`,
-   `_push_to_fb`, `_present`, `_install_sigusr1_tap`,
+   `_push_to_fb`, `_present`, `_set_backlight`, `_install_sigusr1_tap`,
    `_start_evdev_touch_reader`, `init_display`.
 7. **Background work:** `_maybe_kick_tap_refresh`, `_weather_refresh_loop`,
    `_maybe_check_for_new_images`.
@@ -116,6 +123,43 @@ The original implementation used `time.sleep`-driven inner loops in
 clock + config and returns new state. No I/O, no pygame. All branching is in
 this function (mode transitions, blend completion, overlay dismiss). Tests
 exercise it directly.
+
+### Night mode
+
+A scheduled screen on/off, deliberately kept **out** of `tick_state` because it
+is orthogonal to photo rotation. Two pure helpers plus a thin main-loop branch:
+
+- `is_screen_on(now, on_t, off_t)` — pure predicate. Handles a non-wrap window
+  (`08:00 < 22:00` → on during the day) and a wrap window (`22:00 > 08:00` → on
+  overnight). On-boundary inclusive, off-boundary exclusive; minute precision.
+- `night_transition(prev_on, now_on)` — pure edge detector returning
+  `'sleep'` / `'wake'` / `None`.
+- `_set_backlight(on)` — **best-effort** `pinctrl set <BACKLIGHT_GPIO> op dh|dl`.
+  Returns `True` only when the command ran and exited 0; otherwise `False`
+  (missing `pinctrl`, non-zero exit, or `EPIC_NO_BACKLIGHT_CTL` set). The app
+  never depends on the return value — the black frame is the guaranteed
+  fallback.
+
+Main-loop wiring is edge-triggered: on `'sleep'` it cuts the backlight, resets
+state to `MODE_PHOTO` with the overlay cleared, and paints one black frame; on
+`'wake'` it restores the backlight and the normal render resumes. While off it
+drains only QUIT/ESC (taps and SIGUSR1 are ignored) and idles at `clock.tick(4)`
+to spare the Pi Zero. The background weather thread keeps running so the cache
+is warm at wake.
+
+Schedule + backlight are configured by module constants, each with an env
+override so a per-Pi schedule needs no code edit:
+
+| Constant | Default | Env override | Meaning |
+|---|---|---|---|
+| `SCREEN_ON` | `'08:00'` | `EPIC_SCREEN_ON` | Daily wake time (HH:MM, 24h) |
+| `SCREEN_OFF` | `'22:00'` | `EPIC_SCREEN_OFF` | Daily sleep time (HH:MM, 24h) |
+| `NIGHT_MODE` | `True` | `EPIC_NIGHT_DISABLE=1` | Disable scheduling (always on) |
+| `BACKLIGHT_GPIO` | `19` | `EPIC_BACKLIGHT_GPIO` | BCM pin driving the backlight |
+| — | — | `EPIC_NO_BACKLIGHT_CTL=1` | Skip `pinctrl`; black-frame only |
+
+A malformed `EPIC_SCREEN_ON` / `EPIC_SCREEN_OFF` makes `_parse_clock` raise at
+startup (fail fast on a bad schedule, before the loop).
 
 ### Weather threading
 
@@ -199,8 +243,8 @@ EPIC_FBDEV=/dev/fb0 sudo -E env "PATH=$PATH" python -u epic.py
 
 ### Tests:
 ```bash
-pytest -q                                # 121 tests, ~1s on a laptop
-pytest --cov=epic --cov-report=term      # coverage (target ≥95%)
+pytest -q                                # 153 tests, ~1.5s on a laptop
+pytest --cov=epic --cov-report=term      # ~77% overall; pure logic ~fully covered
 ```
 
 ## Pi runtime gotchas (Trixie + Hyperpixel 2.1 Round Touch)
@@ -279,9 +323,11 @@ SIGUSR1.** A future fix would be a USB push button on a GPIO pin.
 
 `brightness.sh` calls deprecated WiringPi `gpio` command — broken on
 Trixie. The HAT's backlight is on GPIO 19 PWM. The init service drives it
-to full automatically; it does not currently support runtime brightness
-control on this OS. Fixing `brightness.sh` to use `pinctrl` is a deferred
-task.
+to full automatically. Night mode now toggles it **on/off** via
+`pinctrl set 19 op dh|dl` inside `_set_backlight` (best-effort — if `pinctrl`
+can't drive the DPI-held pin, the black night frame still applies). Runtime
+**dimming** (PWM brightness, not just on/off) is still unsupported; fixing
+`brightness.sh` to use `pinctrl` for that is a deferred task.
 
 ### `start-epic.sh` and autostart
 
@@ -296,9 +342,11 @@ launch manually over SSH after stopping `getty@tty1.service`.
   `test_epic.py`. Keep it that way unless there's a strong reason.
 - **Settings at the top:** All knobs are module-level constants near the top
   of `epic.py`. Don't bury config in nested code.
-- **TDD:** Tests cover everything except the daemon thread loop and a few
-  branches inside `main()`. Maintain ≥95% coverage. New behavior gets a test
-  first.
+- **TDD:** Pure logic and helpers are fully tested; the framebuffer/touch/
+  `init_display`/`main` I/O paths are hardware-only and can't run off-Pi, so
+  overall line coverage sits at ~77%. New **pure** logic gets a test first and
+  must stay fully covered — don't let testable logic slip into the untested I/O
+  layer.
 - **Pure functions for state:** `tick_state`, `compute_blend_alpha`,
   `is_weather_stale`, `_select_next_24h`, `_get_temp_range` are pure — easy
   to unit-test, easy to reason about. Keep new state-machine logic pure.
@@ -379,7 +427,8 @@ curl -s -X POST "https://api.telegram.org/bot$BOT/sendMessage" \
 🔧 Starting..."
 ```
 4. Implement the fix in `epic.py` (single-file project — keep it that way)
-5. Add tests in `test_epic.py` matching the change. Maintain ≥95% coverage.
+5. Add tests in `test_epic.py` matching the change. Fully cover new pure logic
+   (overall coverage is ~77% — the hardware I/O paths are untestable off-Pi).
 6. Format code: `isort . --sp=.isort.cfg && black . --config=pyproject.toml`
 7. Run tests: `pytest -q`
 8. Sanity check: `python3 -c "import ast; ast.parse(open('epic.py').read()); print('OK')"`

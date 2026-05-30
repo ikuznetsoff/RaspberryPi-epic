@@ -1286,3 +1286,137 @@ class TestRenderForecastChart:
         }
         now = datetime.datetime(2026, 5, 2, 0, 0)
         assert epic.render_forecast_chart(screen, cache, now, 70, 30, 340, 80) is True
+
+
+# ============================================================
+# Night mode (scheduled screen on/off)
+# ============================================================
+
+
+class TestNightModeDefaults:
+    def test_screen_on_default(self):
+        assert epic.SCREEN_ON == '08:00'
+
+    def test_screen_off_default(self):
+        assert epic.SCREEN_OFF == '22:00'
+
+    def test_night_mode_enabled_default(self):
+        assert epic.NIGHT_MODE is True
+
+    def test_backlight_gpio_default(self):
+        assert epic.BACKLIGHT_GPIO == 19
+
+
+class TestParseClock:
+    def test_basic(self):
+        assert epic._parse_clock('08:00') == datetime.time(8, 0)
+
+    def test_minutes(self):
+        assert epic._parse_clock('22:30') == datetime.time(22, 30)
+
+    def test_whitespace(self):
+        assert epic._parse_clock('  07:15 ') == datetime.time(7, 15)
+
+    @pytest.mark.parametrize('bad', ['25:00', '08:99', 'abc', '', '8', '08:00:00'])
+    def test_invalid_raises(self, bad):
+        with pytest.raises(ValueError):
+            epic._parse_clock(bad)
+
+
+class TestIsScreenOn:
+    ON = datetime.time(8, 0)
+    OFF = datetime.time(22, 0)
+
+    def _at(self, h, m=0):
+        return datetime.datetime(2026, 5, 30, h, m)
+
+    def test_daytime_on(self):
+        assert epic.is_screen_on(self._at(12), self.ON, self.OFF) is True
+
+    def test_morning_before_on_off(self):
+        assert epic.is_screen_on(self._at(7, 59), self.ON, self.OFF) is False
+
+    def test_on_boundary_inclusive(self):
+        assert epic.is_screen_on(self._at(8, 0), self.ON, self.OFF) is True
+
+    def test_off_boundary_exclusive(self):
+        assert epic.is_screen_on(self._at(22, 0), self.ON, self.OFF) is False
+
+    def test_late_night_off(self):
+        assert epic.is_screen_on(self._at(23, 30), self.ON, self.OFF) is False
+
+    def test_minute_precision(self):
+        assert epic.is_screen_on(self._at(21, 59), self.ON, self.OFF) is True
+
+    def test_wrap_overnight_on(self):
+        on, off = datetime.time(22, 0), datetime.time(8, 0)
+        assert epic.is_screen_on(self._at(2), on, off) is True
+        assert epic.is_screen_on(self._at(23), on, off) is True
+
+    def test_wrap_overnight_off(self):
+        on, off = datetime.time(22, 0), datetime.time(8, 0)
+        assert epic.is_screen_on(self._at(12), on, off) is False
+        assert epic.is_screen_on(self._at(8, 0), on, off) is False
+
+    def test_degenerate_always_on(self):
+        same = datetime.time(8, 0)
+        assert epic.is_screen_on(self._at(3), same, same) is True
+
+
+class TestNightTransition:
+    def test_on_to_off_is_sleep(self):
+        assert epic.night_transition(True, False) == 'sleep'
+
+    def test_off_to_on_is_wake(self):
+        assert epic.night_transition(False, True) == 'wake'
+
+    def test_steady_on_is_none(self):
+        assert epic.night_transition(True, True) is None
+
+    def test_steady_off_is_none(self):
+        assert epic.night_transition(False, False) is None
+
+
+class TestSetBacklight:
+    def _no_disable_env(self):
+        env = {k: v for k, v in os.environ.items() if k != 'EPIC_NO_BACKLIGHT_CTL'}
+        return mock.patch.dict(os.environ, env, clear=True)
+
+    def test_on_drives_high(self):
+        with self._no_disable_env(), mock.patch.object(epic.subprocess, 'run') as run:
+            run.return_value = mock.Mock(returncode=0)
+            assert epic._set_backlight(True) is True
+            assert run.call_args[0][0] == ['pinctrl', 'set', str(epic.BACKLIGHT_GPIO), 'op', 'dh']
+
+    def test_off_drives_low(self):
+        with self._no_disable_env(), mock.patch.object(epic.subprocess, 'run') as run:
+            run.return_value = mock.Mock(returncode=0)
+            assert epic._set_backlight(False) is True
+            assert run.call_args[0][0][-1] == 'dl'
+
+    def test_disabled_env_skips(self):
+        with (
+            mock.patch.dict(os.environ, {'EPIC_NO_BACKLIGHT_CTL': '1'}),
+            mock.patch.object(epic.subprocess, 'run') as run,
+        ):
+            assert epic._set_backlight(True) is False
+            run.assert_not_called()
+
+    def test_pinctrl_missing_swallowed(self):
+        with self._no_disable_env(), mock.patch.object(epic.subprocess, 'run', side_effect=FileNotFoundError):
+            assert epic._set_backlight(True) is False
+
+    def test_nonzero_exit_returns_false(self):
+        with self._no_disable_env(), mock.patch.object(epic.subprocess, 'run') as run:
+            run.return_value = mock.Mock(returncode=1)
+            assert epic._set_backlight(True) is False
+
+    def test_custom_gpio(self):
+        with (
+            self._no_disable_env(),
+            mock.patch.object(epic, 'BACKLIGHT_GPIO', 12),
+            mock.patch.object(epic.subprocess, 'run') as run,
+        ):
+            run.return_value = mock.Mock(returncode=0)
+            epic._set_backlight(True)
+            assert run.call_args[0][0][2] == '12'

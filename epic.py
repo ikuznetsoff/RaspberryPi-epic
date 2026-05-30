@@ -3,6 +3,7 @@ import io
 import json
 import os
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -31,6 +32,12 @@ WEATHER_REFRESH_MIN = 30
 WEATHER_TAP_REFRESH_MIN = 10
 HTTP_TIMEOUT = 10
 OVERLAY_AUTO_DISMISS_SEC = 60
+
+# Night-mode (scheduled screen on/off) settings
+SCREEN_ON = os.environ.get('EPIC_SCREEN_ON', '08:00')
+SCREEN_OFF = os.environ.get('EPIC_SCREEN_OFF', '22:00')
+NIGHT_MODE = not os.environ.get('EPIC_NIGHT_DISABLE')
+BACKLIGHT_GPIO = int(os.environ.get('EPIC_BACKLIGHT_GPIO', '19'))
 
 DISPLAY_SIZE = (480, 480)
 CROP_SIZE = 830
@@ -94,6 +101,13 @@ def _parse_hhmm(iso_string):
     if iso_string is None:
         return None
     return iso_string.split('T', 1)[1][:5] if 'T' in iso_string else iso_string
+
+
+def _parse_clock(hhmm):
+    parts = hhmm.strip().split(':')
+    if len(parts) != 2:
+        raise ValueError('bad time string: ' + repr(hhmm))
+    return datetime.time(hour=int(parts[0]), minute=int(parts[1]))
 
 
 def fetch_weather(lat, lon):
@@ -179,6 +193,23 @@ def is_weather_stale(cache, refresh_min, now):
     if fetched_at is None:
         return True
     return (now - fetched_at) > datetime.timedelta(minutes=refresh_min)
+
+
+def is_screen_on(now, on_time, off_time):
+    t = now.time()
+    if on_time == off_time:
+        return True
+    if on_time < off_time:
+        return on_time <= t < off_time
+    return t >= on_time or t < off_time
+
+
+def night_transition(prev_on, now_on):
+    if prev_on and not now_on:
+        return 'sleep'
+    if not prev_on and now_on:
+        return 'wake'
+    return None
 
 
 MODE_PHOTO = 'photo'
@@ -555,6 +586,25 @@ def _present(surface):
     pygame.display.flip()
 
 
+def _set_backlight(on):
+    """Best-effort backlight toggle via `pinctrl`. Returns True only when the
+    command ran and exited 0. No-op (False) when EPIC_NO_BACKLIGHT_CTL is set or
+    pinctrl is missing/fails — the black night frame is the guaranteed fallback."""
+    if os.environ.get('EPIC_NO_BACKLIGHT_CTL'):
+        return False
+    level = 'dh' if on else 'dl'
+    try:
+        result = subprocess.run(
+            ['pinctrl', 'set', str(BACKLIGHT_GPIO), 'op', level],
+            check=False,
+            capture_output=True,
+        )
+    except OSError as exc:
+        print('backlight control unavailable:', exc)
+        return False
+    return result.returncode == 0
+
+
 def _install_sigusr1_tap():
     """Wire SIGUSR1 to inject a MOUSEBUTTONDOWN event. Lets you toggle the
     overlay from SSH with `pkill -USR1 -f epic.py`. POSIX only."""
@@ -785,6 +835,12 @@ def main():
         last_image_data='',
     )
 
+    on_t = _parse_clock(SCREEN_ON)
+    off_t = _parse_clock(SCREEN_OFF)
+    black_frame = pygame.Surface(DISPLAY_SIZE)
+    black_frame.fill((0, 0, 0))
+    screen_on = True
+
     clock = pygame.time.Clock()
     running = True
 
@@ -801,6 +857,21 @@ def main():
                 break
         if not running:
             break
+
+        now_on = (not NIGHT_MODE) or is_screen_on(now, on_t, off_t)
+        edge = night_transition(screen_on, now_on)
+        if edge == 'sleep':
+            _set_backlight(False)
+            state = replace(state, mode=MODE_PHOTO, overlay_dismiss_at=None)
+            screen.blit(black_frame, (0, 0))
+            _present(screen)
+        elif edge == 'wake':
+            _set_backlight(True)
+        screen_on = now_on
+
+        if not now_on:
+            clock.tick(4)
+            continue
 
         if any(e.type == pygame.MOUSEBUTTONDOWN for e in events):
             _maybe_kick_tap_refresh(lat, lon, weather_cache_ref, weather_lock)
