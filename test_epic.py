@@ -159,7 +159,7 @@ class TestSavePhotos:
         os.chdir(tmp_path)
         try:
             epic.save_photos(["http://example.com/test.jpg"])
-            assert os.path.exists("0.jpg")
+            assert os.path.exists("0.png")
         finally:
             os.chdir(old_cwd)
 
@@ -178,9 +178,9 @@ class TestSavePhotos:
         os.chdir(tmp_path)
         try:
             epic.save_photos(["http://a.jpg", "http://b.jpg", "http://c.jpg"])
-            assert os.path.exists("0.jpg")
-            assert os.path.exists("1.jpg")
-            assert os.path.exists("2.jpg")
+            assert os.path.exists("0.png")
+            assert os.path.exists("1.png")
+            assert os.path.exists("2.png")
         finally:
             os.chdir(old_cwd)
 
@@ -195,7 +195,7 @@ class TestSavePhotos:
         os.chdir(tmp_path)
         try:
             epic.save_photos(["http://example.com/test.jpg"])
-            loaded = pygame.image.load("0.jpg")
+            loaded = pygame.image.load("0.png")
             assert loaded.get_size() == epic.DISPLAY_SIZE
         finally:
             os.chdir(old_cwd)
@@ -206,7 +206,7 @@ class TestSavePhotos:
         os.chdir(tmp_path)
         try:
             epic.save_photos([])
-            assert not os.path.exists("0.jpg")
+            assert not os.path.exists("0.png")
         finally:
             os.chdir(old_cwd)
 
@@ -322,7 +322,7 @@ class TestSavePhotosAdvanced:
         try:
             with mock.patch("epic.pygame.display.flip"):
                 epic.save_photos(["http://example.com/test.jpg"], screen)
-            assert os.path.exists("0.jpg")
+            assert os.path.exists("0.png")
         finally:
             os.chdir(old_cwd)
 
@@ -904,7 +904,8 @@ class TestMainLoopSmoke:
         os.chdir(tmp_path)
         try:
             surf = pygame.Surface((480, 480))
-            pygame.image.save(surf, '0.jpg')
+            epic._img_cache.clear()
+            pygame.image.save(surf, '0.png')
             pygame.image.save(surf, 'loading.jpg')
 
             monkeypatch.setattr(epic, 'geocode_city', lambda _: (52.23, 21.01, 'Warsaw'))

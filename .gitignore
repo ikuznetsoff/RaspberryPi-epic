@@ -1,4 +1,5 @@
 /venv/*
 /*.jpg
+/*.png
 /__pycache__/*
 /.idea/*

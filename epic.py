@@ -542,6 +542,17 @@ def create_image_urls(photos):
     return urls
 
 
+_img_cache = {}
+
+
+def _load_image(idx):
+    surf = _img_cache.get(idx)
+    if surf is None:
+        surf = pygame.image.load('./' + str(idx) + '.png')
+        _img_cache[idx] = surf
+    return surf
+
+
 def save_photos(imageurls, screen=None):
     print("saving photos")
     counter = 0
@@ -555,8 +566,9 @@ def save_photos(imageurls, screen=None):
         cropped.blit(image, (0, 0), (CROP_OFFSET, CROP_OFFSET, CROP_SIZE, CROP_SIZE))
         cropped = pygame.transform.smoothscale(cropped, DISPLAY_SIZE)
 
-        pygame.image.save(cropped, "./" + str(counter) + ".jpg")
+        pygame.image.save(cropped, "./" + str(counter) + ".png")
         counter += 1
+    _img_cache.clear()
     print("photos saved")
 
 
@@ -969,10 +981,10 @@ def main():
         )
 
         if state.num_photos > 0:
-            current_img = pygame.image.load(r'./' + str(state.current_idx) + '.jpg')
+            current_img = _load_image(state.current_idx)
             if state.mode == MODE_BLENDING:
                 prev_idx = (state.current_idx - 1) % state.num_photos
-                old_img = pygame.image.load(r'./' + str(prev_idx) + '.jpg')
+                old_img = _load_image(prev_idx)
                 alpha = compute_blend_alpha(now, state.blend_started_at, blending_duration)
                 render_blend(screen, old_img, current_img, alpha)
             else:
