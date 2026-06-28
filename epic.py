@@ -49,20 +49,20 @@ DISPLAY_SIZE = (480, 480)
 CROP_SIZE = 830
 CROP_OFFSET = 125
 
-# Pull chroma out of high-contrast edge pixels. Off by default; the panel's
-# real problem is a global cast, not edges (see RGB_GAIN).
+# Edge-aware chroma reduction at save time; off by default (the panel's issue is a global cast, not edges).
 EDGE_DESAT_STRENGTH = float(os.environ.get('EPIC_EDGE_DESAT', '0'))
 EDGE_DESAT_THRESH = 20.0
 
-# Per-channel display white-balance to counteract the panel's cold/blue cast.
-# "r,g,b" gains, applied at load time. e.g. EPIC_RGB_GAIN=1.3,1.0,0.8 warms it.
+# Per-channel display white-balance "r,g,b" gains applied at load; >1 boosts a channel, <1 cuts it.
 RGB_GAIN = tuple(float(x) for x in os.environ.get('EPIC_RGB_GAIN', '1,1,1').split(','))
 if len(RGB_GAIN) != 3:
     raise ValueError('EPIC_RGB_GAIN must be three comma-separated floats: "r,g,b"')
 
-# Global saturation scale. The panel over-saturates the muted EPIC source, so
-# <1 calms it (e.g. EPIC_SATURATION=0.6). 1 = no change.
+# Global saturation scale applied at load; <1 calms the panel's over-vivid rendering, 1 = no change.
 SATURATION = float(os.environ.get('EPIC_SATURATION', '1'))
+
+# Show a built-in grey/colour calibration pattern instead of Earth, to judge the panel by eye.
+TEST_PATTERN = bool(os.environ.get('EPIC_TESTPATTERN'))
 
 WMO_CODES = {
     0: 'Clear',
@@ -954,11 +954,53 @@ def _maybe_check_for_new_images(state, screen, now, force=False):
     return replace(state, next_image_api_check_at=now + datetime.timedelta(minutes=check_delay))
 
 
+def build_test_pattern(size=DISPLAY_SIZE):
+    import numpy as np
+
+    w, h = size
+    img = np.zeros((h, w, 3), dtype=np.uint8)
+    band = h // 3
+    ramp = (np.arange(w) * 255 // max(w - 1, 1)).astype(np.uint8)
+    img[0:band] = ramp[None, :, None]
+    bars = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (0, 255, 255), (255, 0, 255), (255, 255, 0)]
+    bw = w // len(bars)
+    for i, c in enumerate(bars):
+        img[band : 2 * band, i * bw : (i + 1) * bw] = c
+    img[band : 2 * band, len(bars) * bw :] = bars[-1]
+    steps = [0, 64, 128, 192, 255]
+    sw = w // len(steps)
+    for i, v in enumerate(steps):
+        img[2 * band :, i * sw : (i + 1) * sw] = v
+    img[2 * band :, len(steps) * sw :] = steps[-1]
+    return img
+
+
+def _run_test_pattern(screen):
+    try:
+        import numpy  # noqa: F401
+    except ImportError:
+        print('EPIC_TESTPATTERN needs numpy; skipping')
+        return
+    surf = pygame.surfarray.make_surface(build_test_pattern(DISPLAY_SIZE).swapaxes(0, 1))
+    clock = pygame.time.Clock()
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+                return
+        screen.blit(surf, (0, 0))
+        _present(screen)
+        clock.tick(10)
+
+
 def main():
     lat, lon, display_name = geocode_city(CITY_NAME)
     print('Weather for: ' + display_name + ' (' + str(lat) + ', ' + str(lon) + ')')
 
     screen = init_display()
+
+    if TEST_PATTERN:
+        _run_test_pattern(screen)
+        return
 
     try:
         loading = pygame.image.load(r'./loading.jpg')

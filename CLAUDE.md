@@ -407,6 +407,44 @@ flashing, at the cost of real taps almost never landing because there's no
 quiet window. **Operational stance: run with `EPIC_NO_TOUCH=1` and use
 SIGUSR1.** A future fix would be a USB push button on a GPIO pin.
 
+### Panel colour (calibration knobs + test pattern)
+
+The saved frames on disk are correct (verify by `scp`-ing a `*.png` to a real
+monitor — it looks natural). The **panel** renders the deliberately-muted EPIC
+"natural colour" source as over-vivid/blue-shifted. There is **no colorimeter**
+on this setup, so colour is a per-Pi **by-eye calibration**, not a measured fix.
+
+Three load-time correction knobs (module constants, env-overridable, applied
+once per cached frame in `_color_correct` → cheap on the Pi Zero, retune by just
+restarting — no image refetch):
+
+| Constant | Default (no-op) | Env override | Meaning |
+|---|---|---|---|
+| `SATURATION` | `1.0` | `EPIC_SATURATION` | global saturation scale; `<1` calms over-vivid colour (main lever) |
+| `RGB_GAIN` | `(1,1,1)` | `EPIC_RGB_GAIN` | per-channel `r,g,b` white-balance; warm with e.g. `1.2,1.0,0.8` |
+| `EDGE_DESAT_STRENGTH` | `0` | `EPIC_EDGE_DESAT` | edge-only chroma cut (save time); off — edges were never the issue |
+
+`apply_saturation`/`apply_white_balance`/`soften_edge_chroma` are pure numpy
+(luma-preserving / reversible, clipped, fully unit-tested). Defaults are exact
+no-ops (no numpy import), so a stock deploy changes nothing.
+
+**Diagnose before trusting any value — use the built-in test pattern, NOT a
+phone photo.** A phone in a dark room auto-boosts saturation and white-balances
+against ambient, manufacturing the exact "oversaturated + blue" look — an
+earlier "panel is 4.6× oversaturated" reading was that camera artifact, not a
+panel measurement. Run `EPIC_TESTPATTERN=1` (via the systemd override, then
+restart) to show a grey ramp + R/G/B/C/M/Y bars + neutral 0/64/128/192/255
+steps through the normal display path, and judge **by eye on the glass**:
+
+- 50% grey patch looks neutral but Earth still vivid → panel is faithful; leave
+  `SATURATION=1.0` (the vividness was the camera / the genuinely muted source).
+- grey patch/steps look blue → real WB cast → set `EPIC_RGB_GAIN` (read the
+  needed gain off the neutral steps).
+- grey ramp is crushed / banded / non-monotonic → **gamma** problem; neither
+  knob fixes it — needs a KMS/DRM gamma LUT.
+- colour bars posterise / wrong hue / channel-swapped → **DPI bus-format**
+  mismatch in the overlay (fix the overlay, not the image).
+
 ### Backlight
 
 `brightness.sh` calls deprecated WiringPi `gpio` command — broken on Trixie.
@@ -485,6 +523,7 @@ so a repo reset never touches it.
 | Run app (dev, any OS) | `python -u epic.py` (windowed on win32/darwin, fullscreen on Linux desktop) |
 | Toggle overlay over SSH | `pkill -USR1 -f epic.py` |
 | Open control dashboard | browse to `http://<pi-ip>:8080/` |
+| Show panel colour test pattern | set `EPIC_TESTPATTERN=1`, restart (judge colour by eye; see "Panel colour") |
 | API: force screen off | `curl -XPOST http://<pi-ip>:8080/api/screen/off` |
 | API: load latest image | `curl -XPOST http://<pi-ip>:8080/api/image/refresh` |
 | Run tests | `pytest -q` |

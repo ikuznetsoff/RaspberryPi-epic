@@ -1851,3 +1851,61 @@ class TestApplySaturation:
         out = epic.apply_saturation(arr, sat=0.7)
         assert out.shape == (5, 7, 3)
         assert out.dtype == np.uint8
+
+    def test_oversaturation_widens_spread_and_clips(self):
+        np = pytest.importorskip('numpy')
+        arr = np.full((4, 4, 3), (200, 100, 20), dtype=np.uint8)
+        out = epic.apply_saturation(arr, sat=3.0)
+        assert _spread(np, out).mean() > _spread(np, arr).mean()
+        assert out.max() == 255 and out.min() == 0  # channels clip both ends
+
+
+class TestColorCorrectDefaults:
+    def test_saturation_uses_module_default(self, monkeypatch):
+        np = pytest.importorskip('numpy')
+        monkeypatch.setattr(epic, 'SATURATION', 0.0)
+        arr = np.full((3, 3, 3), (200, 100, 40), dtype=np.uint8)
+        out = epic.apply_saturation(arr)  # no sat arg -> module default
+        assert _spread(np, out).max() <= 1
+
+    def test_white_balance_uses_module_default(self, monkeypatch):
+        np = pytest.importorskip('numpy')
+        monkeypatch.setattr(epic, 'RGB_GAIN', (2.0, 1.0, 1.0))
+        arr = np.full((3, 3, 3), (100, 100, 100), dtype=np.uint8)
+        out = epic.apply_white_balance(arr)  # no gains arg -> module default
+        assert (out[:, :, 0] == 200).all()
+
+    def test_edge_desat_uses_module_default(self, monkeypatch):
+        np = pytest.importorskip('numpy')
+        monkeypatch.setattr(epic, 'EDGE_DESAT_STRENGTH', 0.0)
+        arr = np.full((4, 4, 3), (10, 200, 10), dtype=np.uint8)
+        out = epic.soften_edge_chroma(arr)  # strength None -> default 0 -> identity
+        assert np.array_equal(out, arr)
+
+
+class TestBuildTestPattern:
+    def test_shape_and_dtype(self):
+        np = pytest.importorskip('numpy')
+        out = epic.build_test_pattern((480, 480))
+        assert out.shape == (480, 480, 3)
+        assert out.dtype == np.uint8
+
+    def test_grayscale_ramp_neutral_black_to_white(self):
+        np = pytest.importorskip('numpy')
+        out = epic.build_test_pattern((480, 480))
+        assert out[5, 0].max() < 10  # left ~black
+        assert out[5, -1].min() > 245  # right ~white
+        assert (out[5, :, 0] == out[5, :, 1]).all()  # neutral ramp (R==G)
+        assert (out[5, :, 1] == out[5, :, 2]).all()  # neutral ramp (G==B)
+
+    def test_has_pure_primary_bars(self):
+        np = pytest.importorskip('numpy')
+        mid = epic.build_test_pattern((480, 480))[240]
+        cols = {tuple(int(v) for v in c) for c in mid}
+        assert {(255, 0, 0), (0, 255, 0), (0, 0, 255)} <= cols
+
+    def test_neutral_steps_are_gray(self):
+        np = pytest.importorskip('numpy')
+        bottom = epic.build_test_pattern((480, 480))[470]
+        assert (bottom[:, 0] == bottom[:, 1]).all() and (bottom[:, 1] == bottom[:, 2]).all()
+        assert 128 in set(int(v) for v in bottom[:, 0])  # 50% grey patch present
