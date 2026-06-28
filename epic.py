@@ -49,6 +49,11 @@ DISPLAY_SIZE = (480, 480)
 CROP_SIZE = 830
 CROP_OFFSET = 125
 
+# Pull chroma out of high-contrast edge pixels so the 18-bit panel can't
+# exaggerate them into neon green/blue borders. 0 disables; ~0.6 is mild.
+EDGE_DESAT_STRENGTH = float(os.environ.get('EPIC_EDGE_DESAT', '0.6'))
+EDGE_DESAT_THRESH = 20.0
+
 WMO_CODES = {
     0: 'Clear',
     1: 'Mostly Clear',
@@ -542,6 +547,37 @@ def create_image_urls(photos):
     return urls
 
 
+def soften_edge_chroma(arr, strength=None, thresh=None):
+    import numpy as np
+
+    if strength is None:
+        strength = EDGE_DESAT_STRENGTH
+    if thresh is None:
+        thresh = EDGE_DESAT_THRESH
+    if strength <= 0:
+        return arr
+    a = arr.astype(np.float32)
+    y = 0.299 * a[:, :, 0] + 0.587 * a[:, :, 1] + 0.114 * a[:, :, 2]
+    gy, gx = np.gradient(y)
+    w = np.clip(np.hypot(gx, gy) / thresh, 0.0, 1.0)
+    pad = np.pad(w, 1, mode='edge')
+    h, ww = w.shape
+    w = np.maximum.reduce([pad[i : i + h, j : j + ww] for i in range(3) for j in range(3)])
+    factor = (1.0 - strength * w)[:, :, None]
+    out = y[:, :, None] + (a - y[:, :, None]) * factor
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
+def _apply_edge_desat(surface):
+    if EDGE_DESAT_STRENGTH <= 0:
+        return surface
+    try:
+        import numpy  # noqa: F401
+    except ImportError:
+        return surface
+    return pygame.surfarray.make_surface(soften_edge_chroma(pygame.surfarray.array3d(surface)))
+
+
 _img_cache = {}
 
 
@@ -565,6 +601,7 @@ def save_photos(imageurls, screen=None):
         cropped = pygame.Surface((CROP_SIZE, CROP_SIZE))
         cropped.blit(image, (0, 0), (CROP_OFFSET, CROP_OFFSET, CROP_SIZE, CROP_SIZE))
         cropped = pygame.transform.smoothscale(cropped, DISPLAY_SIZE)
+        cropped = _apply_edge_desat(cropped)
 
         pygame.image.save(cropped, "./" + str(counter) + ".png")
         counter += 1

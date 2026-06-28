@@ -1719,3 +1719,66 @@ class TestPackRgb565:
         r = (out >> 11) & 0x1F
         b = out & 0x1F
         assert not (r == b).all()
+
+
+def _spread(np, a):
+    return a.max(axis=2).astype(np.int16) - a.min(axis=2).astype(np.int16)
+
+
+def _luma(np, a):
+    a = a.astype(np.float32)
+    return 0.299 * a[:, :, 0] + 0.587 * a[:, :, 1] + 0.114 * a[:, :, 2]
+
+
+class TestSoftenEdgeChroma:
+    def _edge_img(self, np):
+        # left half saturated red, right half saturated blue -> one sharp edge
+        arr = np.zeros((8, 8, 3), dtype=np.uint8)
+        arr[:, :4] = (255, 0, 0)
+        arr[:, 4:] = (0, 0, 255)
+        return arr
+
+    def test_strength_zero_is_identity(self):
+        np = pytest.importorskip('numpy')
+        arr = self._edge_img(np)
+        out = epic.soften_edge_chroma(arr, strength=0.0)
+        assert np.array_equal(out, arr)
+
+    def test_flat_image_unchanged(self):
+        np = pytest.importorskip('numpy')
+        arr = np.full((8, 8, 3), (200, 80, 40), dtype=np.uint8)
+        out = epic.soften_edge_chroma(arr, strength=0.8)
+        assert np.array_equal(out, arr)  # no gradient -> nothing desaturated
+
+    def test_edge_chroma_reduced(self):
+        np = pytest.importorskip('numpy')
+        arr = self._edge_img(np)
+        out = epic.soften_edge_chroma(arr, strength=0.8, thresh=20.0)
+        boundary = _spread(np, out[:, 3:5]).mean()
+        assert boundary < 200  # input boundary spread is 255
+
+    def test_flat_region_keeps_full_saturation(self):
+        np = pytest.importorskip('numpy')
+        arr = self._edge_img(np)
+        out = epic.soften_edge_chroma(arr, strength=0.8, thresh=20.0)
+        assert _spread(np, out[:, :1]).mean() == 255  # far-from-edge untouched
+
+    def test_luminance_preserved(self):
+        np = pytest.importorskip('numpy')
+        arr = self._edge_img(np)
+        out = epic.soften_edge_chroma(arr, strength=0.8, thresh=20.0)
+        assert np.allclose(_luma(np, out), _luma(np, arr), atol=2.0)
+
+    def test_higher_strength_reduces_more(self):
+        np = pytest.importorskip('numpy')
+        arr = self._edge_img(np)
+        weak = _spread(np, epic.soften_edge_chroma(arr, 0.4, 20.0)[:, 3:5]).mean()
+        strong = _spread(np, epic.soften_edge_chroma(arr, 0.9, 20.0)[:, 3:5]).mean()
+        assert strong < weak
+
+    def test_shape_and_dtype_preserved(self):
+        np = pytest.importorskip('numpy')
+        arr = self._edge_img(np)
+        out = epic.soften_edge_chroma(arr, strength=0.7)
+        assert out.shape == arr.shape
+        assert out.dtype == np.uint8
