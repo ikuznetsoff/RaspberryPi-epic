@@ -593,17 +593,19 @@ def _open_fb(path):
 
 def pack_rgb565(arr):
     """Pack an (H, W, 3) uint8 RGB array into an (H, W) uint16 RGB565 array with
-    4x4 ordered (Bayer) dithering. Pure: numpy in, numpy out. Dithering avoids the
-    banding and edge fringing that plain truncation shows on the 16bpp KMS fb."""
+    4x4 ordered (Bayer) dithering. Pure: numpy in, numpy out. Each channel uses a
+    spatially offset copy of the Bayer matrix so the dither reads as neutral
+    luminance grain instead of the chromatic speckle a shared pattern produces."""
     import numpy as np
 
     h, w = arr.shape[0], arr.shape[1]
     bayer = np.array([[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]], dtype=np.int16)
     d = np.tile(bayer, ((h + 3) // 4, (w + 3) // 4))[:h, :w]
+    dr, dg, db = d, (d + 5) % 16, (d + 10) % 16
     c = arr.astype(np.int16)
-    r = np.clip(c[:, :, 0] + (d >> 1), 0, 255).astype(np.uint16) >> 3
-    g = np.clip(c[:, :, 1] + (d >> 2), 0, 255).astype(np.uint16) >> 2
-    b = np.clip(c[:, :, 2] + (d >> 1), 0, 255).astype(np.uint16) >> 3
+    r = np.clip(c[:, :, 0] + (dr >> 1), 0, 255).astype(np.uint16) >> 3
+    g = np.clip(c[:, :, 1] + (dg >> 2), 0, 255).astype(np.uint16) >> 2
+    b = np.clip(c[:, :, 2] + (db >> 1), 0, 255).astype(np.uint16) >> 3
     return (r << 11) | (g << 5) | b
 
 

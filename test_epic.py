@@ -1709,3 +1709,12 @@ class TestPackRgb565:
         out = epic.pack_rgb565(np.full((7, 5, 3), 100, dtype=np.uint8))
         assert out.shape == (7, 5)
         assert out.dtype == np.uint16
+
+    def test_channels_dither_independently(self):
+        np = pytest.importorskip('numpy')
+        # equal R and B input but decorrelated dither patterns -> their packed
+        # 5-bit values must differ somewhere (not a shared chromatic pattern)
+        out = epic.pack_rgb565(np.full((8, 8, 3), 20, dtype=np.uint8))
+        r = (out >> 11) & 0x1F
+        b = out & 0x1F
+        assert not (r == b).all()
