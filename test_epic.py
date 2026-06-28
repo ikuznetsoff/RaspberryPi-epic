@@ -1674,3 +1674,38 @@ class TestApiServerIntegration:
     def test_start_returns_none_on_bad_port(self):
         bridge = epic_api.ApiBridge()
         assert epic_api.start_api_server(bridge, '127.0.0.1', -1) is None
+
+
+class TestPackRgb565:
+    def test_black_stays_zero(self):
+        np = pytest.importorskip('numpy')
+        arr = np.zeros((4, 4, 3), dtype=np.uint8)
+        out = epic.pack_rgb565(arr)
+        assert out.shape == (4, 4)
+        assert out.dtype == np.uint16
+        assert (out == 0).all()
+
+    def test_white_is_max(self):
+        np = pytest.importorskip('numpy')
+        arr = np.full((4, 4, 3), 255, dtype=np.uint8)
+        assert (epic.pack_rgb565(arr) == 0xFFFF).all()
+
+    def test_pure_red_fills_top_bits_only(self):
+        np = pytest.importorskip('numpy')
+        arr = np.zeros((4, 4, 3), dtype=np.uint8)
+        arr[:, :, 0] = 255
+        out = epic.pack_rgb565(arr)
+        assert ((out >> 11) == 0x1F).all()  # red maxed
+        assert ((out & 0x07FF) == 0).all()  # green + blue zero
+
+    def test_dithering_varies_spatially(self):
+        np = pytest.importorskip('numpy')
+        # a grey sitting between 5-bit levels must dither to more than one value
+        out = epic.pack_rgb565(np.full((8, 8, 3), 12, dtype=np.uint8))
+        assert len(np.unique(out)) > 1
+
+    def test_non_multiple_of_four_size(self):
+        np = pytest.importorskip('numpy')
+        out = epic.pack_rgb565(np.full((7, 5, 3), 100, dtype=np.uint8))
+        assert out.shape == (7, 5)
+        assert out.dtype == np.uint16

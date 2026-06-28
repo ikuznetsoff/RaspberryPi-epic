@@ -591,9 +591,25 @@ def _open_fb(path):
     return {"fd": fd, "mm": mm, "xres": xres, "yres": yres, "bpp": bpp, "line_length": line_length}
 
 
+def pack_rgb565(arr):
+    """Pack an (H, W, 3) uint8 RGB array into an (H, W) uint16 RGB565 array with
+    4x4 ordered (Bayer) dithering. Pure: numpy in, numpy out. Dithering avoids the
+    banding and edge fringing that plain truncation shows on the 16bpp KMS fb."""
+    import numpy as np
+
+    h, w = arr.shape[0], arr.shape[1]
+    bayer = np.array([[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]], dtype=np.int16)
+    d = np.tile(bayer, ((h + 3) // 4, (w + 3) // 4))[:h, :w]
+    c = arr.astype(np.int16)
+    r = np.clip(c[:, :, 0] + (d >> 1), 0, 255).astype(np.uint16) >> 3
+    g = np.clip(c[:, :, 1] + (d >> 2), 0, 255).astype(np.uint16) >> 2
+    b = np.clip(c[:, :, 2] + (d >> 1), 0, 255).astype(np.uint16) >> 3
+    return (r << 11) | (g << 5) | b
+
+
 def _push_to_fb(surface, fb):
     """Copy a pygame Surface into a mmapped framebuffer, converting pixel
-    format on the fly. Supports 16bpp RGB565 (numpy required) and 32bpp BGRA."""
+    format on the fly. Supports 16bpp RGB565 (numpy required, dithered) and 32bpp BGRA."""
     if fb["bpp"] == 32:
         data = pygame.image.tobytes(surface, "BGRA")
         # Some fbs have stride padding; copy row by row if so.
@@ -608,13 +624,8 @@ def _push_to_fb(surface, fb):
             import numpy as np
         except ImportError:
             raise RuntimeError("16bpp framebuffer requires numpy: pip install numpy")
-        arr = pygame.surfarray.array3d(surface)  # (W, H, 3) uint8
-        r = (arr[:, :, 0].astype(np.uint16) >> 3) & 0x1F
-        g = (arr[:, :, 1].astype(np.uint16) >> 2) & 0x3F
-        b = (arr[:, :, 2].astype(np.uint16) >> 3) & 0x1F
-        rgb565 = (r << 11) | (g << 5) | b
-        rgb565 = np.ascontiguousarray(rgb565.swapaxes(0, 1))  # -> (H, W)
-        data = rgb565.tobytes()
+        arr = pygame.surfarray.array3d(surface).swapaxes(0, 1)  # (H, W, 3) uint8
+        data = np.ascontiguousarray(pack_rgb565(arr)).tobytes()
         row = fb["xres"] * 2
         if fb["line_length"] == row:
             fb["mm"][: len(data)] = data
