@@ -553,7 +553,7 @@ def save_photos(imageurls, screen=None):
         # Crop out the centre 830px square from the image to make globe fill screen
         cropped = pygame.Surface((CROP_SIZE, CROP_SIZE))
         cropped.blit(image, (0, 0), (CROP_OFFSET, CROP_OFFSET, CROP_SIZE, CROP_SIZE))
-        cropped = pygame.transform.scale(cropped, DISPLAY_SIZE)
+        cropped = pygame.transform.smoothscale(cropped, DISPLAY_SIZE)
 
         pygame.image.save(cropped, "./" + str(counter) + ".jpg")
         counter += 1
