@@ -1782,3 +1782,72 @@ class TestSoftenEdgeChroma:
         out = epic.soften_edge_chroma(arr, strength=0.7)
         assert out.shape == arr.shape
         assert out.dtype == np.uint8
+
+
+class TestApplyWhiteBalance:
+    def test_identity_gain_unchanged(self):
+        np = pytest.importorskip('numpy')
+        arr = np.full((4, 4, 3), (100, 120, 140), dtype=np.uint8)
+        out = epic.apply_white_balance(arr, gains=(1.0, 1.0, 1.0))
+        assert np.array_equal(out, arr)
+
+    def test_red_boost(self):
+        np = pytest.importorskip('numpy')
+        arr = np.full((4, 4, 3), (100, 100, 100), dtype=np.uint8)
+        out = epic.apply_white_balance(arr, gains=(2.0, 1.0, 1.0))
+        assert (out[:, :, 0] == 200).all()
+        assert (out[:, :, 1] == 100).all()
+        assert (out[:, :, 2] == 100).all()
+
+    def test_blue_cut(self):
+        np = pytest.importorskip('numpy')
+        arr = np.full((4, 4, 3), (100, 100, 200), dtype=np.uint8)
+        out = epic.apply_white_balance(arr, gains=(1.0, 1.0, 0.5))
+        assert (out[:, :, 2] == 100).all()
+
+    def test_clips_to_255(self):
+        np = pytest.importorskip('numpy')
+        arr = np.full((4, 4, 3), (200, 0, 0), dtype=np.uint8)
+        out = epic.apply_white_balance(arr, gains=(2.0, 1.0, 1.0))
+        assert (out[:, :, 0] == 255).all()  # 400 clamped
+
+    def test_shape_and_dtype_preserved(self):
+        np = pytest.importorskip('numpy')
+        arr = np.full((5, 7, 3), (90, 90, 90), dtype=np.uint8)
+        out = epic.apply_white_balance(arr, gains=(1.2, 1.0, 0.8))
+        assert out.shape == (5, 7, 3)
+        assert out.dtype == np.uint8
+
+
+class TestApplySaturation:
+    def test_unity_is_identity(self):
+        np = pytest.importorskip('numpy')
+        arr = np.full((4, 4, 3), (200, 100, 40), dtype=np.uint8)
+        out = epic.apply_saturation(arr, sat=1.0)
+        assert np.array_equal(out, arr)
+
+    def test_zero_is_grayscale(self):
+        np = pytest.importorskip('numpy')
+        arr = np.full((4, 4, 3), (200, 100, 40), dtype=np.uint8)
+        out = epic.apply_saturation(arr, sat=0.0)
+        assert _spread(np, out).max() <= 1  # all channels collapse to luminance
+
+    def test_half_reduces_spread(self):
+        np = pytest.importorskip('numpy')
+        arr = np.full((4, 4, 3), (200, 100, 40), dtype=np.uint8)
+        before = _spread(np, arr).mean()
+        after = _spread(np, epic.apply_saturation(arr, sat=0.5)).mean()
+        assert after < before * 0.6
+
+    def test_luminance_preserved(self):
+        np = pytest.importorskip('numpy')
+        arr = np.full((4, 4, 3), (200, 100, 40), dtype=np.uint8)
+        out = epic.apply_saturation(arr, sat=0.5)
+        assert np.allclose(_luma(np, out), _luma(np, arr), atol=2.0)
+
+    def test_shape_and_dtype_preserved(self):
+        np = pytest.importorskip('numpy')
+        arr = np.full((5, 7, 3), (120, 60, 30), dtype=np.uint8)
+        out = epic.apply_saturation(arr, sat=0.7)
+        assert out.shape == (5, 7, 3)
+        assert out.dtype == np.uint8

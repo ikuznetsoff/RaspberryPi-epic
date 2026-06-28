@@ -49,10 +49,20 @@ DISPLAY_SIZE = (480, 480)
 CROP_SIZE = 830
 CROP_OFFSET = 125
 
-# Pull chroma out of high-contrast edge pixels so the 18-bit panel can't
-# exaggerate them into neon green/blue borders. 0 disables; ~0.6 is mild.
-EDGE_DESAT_STRENGTH = float(os.environ.get('EPIC_EDGE_DESAT', '0.6'))
+# Pull chroma out of high-contrast edge pixels. Off by default; the panel's
+# real problem is a global cast, not edges (see RGB_GAIN).
+EDGE_DESAT_STRENGTH = float(os.environ.get('EPIC_EDGE_DESAT', '0'))
 EDGE_DESAT_THRESH = 20.0
+
+# Per-channel display white-balance to counteract the panel's cold/blue cast.
+# "r,g,b" gains, applied at load time. e.g. EPIC_RGB_GAIN=1.3,1.0,0.8 warms it.
+RGB_GAIN = tuple(float(x) for x in os.environ.get('EPIC_RGB_GAIN', '1,1,1').split(','))
+if len(RGB_GAIN) != 3:
+    raise ValueError('EPIC_RGB_GAIN must be three comma-separated floats: "r,g,b"')
+
+# Global saturation scale. The panel over-saturates the muted EPIC source, so
+# <1 calms it (e.g. EPIC_SATURATION=0.6). 1 = no change.
+SATURATION = float(os.environ.get('EPIC_SATURATION', '1'))
 
 WMO_CODES = {
     0: 'Clear',
@@ -578,13 +588,50 @@ def _apply_edge_desat(surface):
     return pygame.surfarray.make_surface(soften_edge_chroma(pygame.surfarray.array3d(surface)))
 
 
+def apply_white_balance(arr, gains=None):
+    import numpy as np
+
+    if gains is None:
+        gains = RGB_GAIN
+    if tuple(gains) == (1.0, 1.0, 1.0):
+        return arr
+    a = arr.astype(np.float32)
+    a[:, :, 0] *= gains[0]
+    a[:, :, 1] *= gains[1]
+    a[:, :, 2] *= gains[2]
+    return np.clip(a, 0, 255).astype(np.uint8)
+
+
+def apply_saturation(arr, sat=None):
+    import numpy as np
+
+    if sat is None:
+        sat = SATURATION
+    if sat == 1.0:
+        return arr
+    a = arr.astype(np.float32)
+    y = (0.299 * a[:, :, 0] + 0.587 * a[:, :, 1] + 0.114 * a[:, :, 2])[:, :, None]
+    return np.clip(y + (a - y) * sat, 0, 255).astype(np.uint8)
+
+
+def _color_correct(surface):
+    if RGB_GAIN == (1.0, 1.0, 1.0) and SATURATION == 1.0:
+        return surface
+    try:
+        import numpy  # noqa: F401
+    except ImportError:
+        return surface
+    arr = apply_saturation(apply_white_balance(pygame.surfarray.array3d(surface)))
+    return pygame.surfarray.make_surface(arr)
+
+
 _img_cache = {}
 
 
 def _load_image(idx):
     surf = _img_cache.get(idx)
     if surf is None:
-        surf = pygame.image.load('./' + str(idx) + '.png')
+        surf = _color_correct(pygame.image.load('./' + str(idx) + '.png'))
         _img_cache[idx] = surf
     return surf
 
