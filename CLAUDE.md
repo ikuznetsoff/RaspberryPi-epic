@@ -305,26 +305,62 @@ Pi-side issues, check these first.
 
 ### `/boot/firmware/config.txt`
 
-Working configuration (KMS off, legacy fbdev path, Pimoroni overlay):
+**Two regimes — pick by kernel.** The 2026 Trixie image (firmware ~Feb 2026,
+kernel 6.12.75) **dropped the legacy non-KMS DPI framebuffer path** the
+HyperPixel relied on. Symptom: firmware rainbow splash shows on the panel, then
+goes **black** the instant the kernel takes the framebuffer — `/dev/fb0`
+(bcm2708_fb) accepts bytes but nothing reaches the glass, DPI pins muxed `a2`
+correctly, `hyperpixel2r-init` runs clean. On that kernel you MUST drive the
+panel through **KMS**, not the legacy DPI overlay. (This was the whole "black
+after splash post-reinstall" saga — it was the new kernel, not the app/config/
+ribbon/GPIO19.)
+
+**Working config on the 2026 Trixie kernel (KMS DPI):**
 ```
-# Hyperpixel 2.1 Round panel
-#dtoverlay=vc4-kms-v3d                          # disabled — claims pins/fb wrong
-dtoverlay=hyperpixel2r                          # Pimoroni legacy DPI overlay
+dtoverlay=vc4-kms-v3d
+dtoverlay=vc4-kms-dpi-hyperpixel2r
+display_auto_detect=0          # stock Trixie =1 auto-loads a conflicting overlay
+# legacy DPI block ALL commented out:
+#dtoverlay=hyperpixel2r
+#enable_dpi_lcd=1
+#dpi_group=2
+#dpi_mode=87
+#dpi_output_format=0x7f216
+#dpi_timings=480 0 10 16 55 480 0 15 60 15 0 0 0 60 0 19200000 6
+#disable_fw_kms_setup=1
+#framebuffer_width=480
+#framebuffer_height=480
+```
+Under KMS: `/proc/fb` reads `vc4drmfb`, fb is `/dev/fb0` but **16bpp RGB565**
+(not 32bpp) → epic's 16bpp path runs and **needs numpy**, which needs
+`libopenblas0`:
+```
+sudo apt install -y libopenblas0
+/home/ivank/pi/code/epic/venv/bin/pip install numpy
+```
+Two more gotchas on the 2026 image: it defaults to Pi OS **Desktop** (a
+compositor owns the display, so epic's raw fbdev can't take over — fix:
+`sudo systemctl set-default multi-user.target` for console boot, or flash Pi OS
+**Lite**), and `vc4-kms-v3d` is slow on its first boot (initramfs rebuild —
+looks like a reboot loop but completes in ~1 min).
+
+**Legacy config (older/Bookworm kernels only — KMS off).** Kept for reference;
+does NOT drive the panel on the 2026 Trixie kernel:
+```
+#dtoverlay=vc4-kms-v3d
+dtoverlay=hyperpixel2r
 enable_dpi_lcd=1
 dpi_group=2
 dpi_mode=87
 dpi_output_format=0x7f216
 dpi_timings=480 0 10 16 55 480 0 15 60 15 0 0 0 60 0 19200000 6
 disable_fw_kms_setup=1
-#dtoverlay=vc4-kms-dpi-hyperpixel2r             # disabled — colors mapped wrong
-dtparam=i2c_arm=on
 framebuffer_width=480
 framebuffer_height=480
 ```
-
-Without `framebuffer_width/height=480`, the firmware creates a 720x480 fb
-and feeds it to the DPI peripheral — output is garbled because the panel
-expects 480x480.
+Without `framebuffer_width/height=480` the firmware makes a 720x480 fb → garbled
+(panel expects 480x480). On Bookworm this legacy path gives a 32bpp fb (no numpy
+needed).
 
 ### Panel SPI init
 
@@ -344,15 +380,16 @@ sudo systemctl restart hyperpixel2r-init.service
 
 ### Framebuffer device
 
-After the above config, two fb devices appear:
-- `/dev/fb0` — simplefb (firmware boot logo) — **also where the Pimoroni
-  overlay routes pixels in this configuration**, despite the name. **Use
-  this one** with `EPIC_FBDEV=/dev/fb0`.
-- `/dev/fb1` — secondary, do not use.
+- **KMS DPI (2026 Trixie kernel):** `/proc/fb` shows a single `vc4drmfb` at
+  `/dev/fb0`, **16bpp RGB565**. Still `EPIC_FBDEV=/dev/fb0`, but epic's 16bpp
+  numpy path runs. NB the noise test is `head -c $((480*480*2))` (2 bytes/px);
+  writing `*4` gives "No space left on device" (that's the tell it's 16bpp).
+- **Legacy DPI (Bookworm/old kernel):** two `BCM2708 FB` (or simplefb) devices
+  at 32bpp; `/dev/fb0` is the one the DPI scans out — `EPIC_FBDEV=/dev/fb0`,
+  `/dev/fb1` secondary, don't use.
 
-Confirm with `fbset -fb /dev/fbN` (look for `geometry 480 480 …`) and a
-quick `sudo head -c $((480*480*4)) /dev/urandom > /dev/fbN` — whichever
-shows visible noise on the panel is the right one.
+Confirm with `cat /proc/fb` and `fbset -fb /dev/fb0` (look for `geometry 480
+480 …`).
 
 ### SDL2 has no display backends
 
@@ -372,13 +409,20 @@ SIGUSR1.** A future fix would be a USB push button on a GPIO pin.
 
 ### Backlight
 
-`brightness.sh` calls deprecated WiringPi `gpio` command — broken on
-Trixie. The HAT's backlight is on GPIO 19 PWM. The init service drives it
-to full automatically. Night mode now toggles it **on/off** via
-`pinctrl set 19 op dh|dl` inside `_set_backlight` (best-effort — if `pinctrl`
-can't drive the DPI-held pin, the black night frame still applies). Runtime
-**dimming** (PWM brightness, not just on/off) is still unsupported; fixing
-`brightness.sh` to use `pinctrl` for that is a deferred task.
+`brightness.sh` calls deprecated WiringPi `gpio` command — broken on Trixie.
+
+GPIO18/19 read `op` (output high) in `pinctrl get 0-27` — that's correct, NOT a
+bug. Under `dpi_output_format=0x7f216` the panel runs **18-bit RGB666**, so
+GPIO10/11, 18/19, 26/27 are the *unused* upper color bits; GPIO19 is one of
+those, repurposed as a backlight output — **it is not a live DPI signal line.**
+So night mode's `_set_backlight` (`pinctrl set 19 op dh|dl`) is harmless to the
+DPI image — an earlier theory that "driving GPIO19 blacks the panel" was WRONG.
+(Whether GPIO19 actually dims the backlight is unconfirmed; the black night
+frame is the guaranteed fallback regardless.)
+
+The real "black panel after splash" regression was the **OS reinstall's new
+Trixie kernel dropping legacy DPI**, not night mode — see config.txt above; the
+fix is the KMS DPI overlay. Runtime **dimming** (PWM) was never working.
 
 ### `start-epic.sh` and autostart
 
@@ -412,12 +456,26 @@ launch manually over SSH after stopping `getty@tty1.service`.
 
 ## Deployment
 
-Production deployment lives at `/home/ivank/pi/code/epic/` on the Pi (the
-Pi user is `ivank`, not the Raspberry-default `pi`). The recommended runtime
-is a systemd service running as root with `EPIC_FBDEV=/dev/fb0` and
-`EPIC_NO_TOUCH=1` set in the unit's `Environment=` block, after
-`hyperpixel2r-init.service` has finished. The service file lives outside
-this repo (per-Pi system config).
+**Live deploy path (VERIFIED — use this one): `/home/ivank/pi/code/epic/`.**
+This is the systemd `WorkingDirectory` / `ExecStart` dir; the venv is at
+`/home/ivank/pi/code/epic/venv/`. The unit is `/etc/systemd/system/epic.service`
+(runs as `root`, `Type=simple`, `EPIC_FBDEV=/dev/fb0` + `EPIC_NO_TOUCH=1` in
+`Environment=`, `ExecStartPre=/usr/bin/hyperpixel2r-init`, after
+`hyperpixel2r-init.service`). The Pi user is `ivank`, not the Pi-default `pi`.
+
+**Decoy copies — do NOT edit/roll back these, the service ignores them:**
+`/home/ivank/github/RaspberryPi-epic/` (a stray clone) and
+`/home/ivank/~pi/code/epic/` (junk folder from a `cd ~pi/...` that never
+expanded the tilde). `sudo find /home -name epic.py` lists all three; only
+`/home/ivank/pi/code/epic/` is wired to the service. Always confirm the target
+with `systemctl cat epic.service` before touching files on the Pi.
+
+To roll the deploy back: `sudo systemctl stop epic.service` →
+`sudo git -C /home/ivank/pi/code/epic reset --hard <commit>` →
+`sudo git -C /home/ivank/pi/code/epic clean -fd` (venv is gitignored via
+`/venv/*`, so it survives) → `sudo reboot` (the reboot is mandatory after any
+GPIO19 change — see Backlight gotcha). The service file lives outside this repo,
+so a repo reset never touches it.
 
 ## Common Tasks
 
