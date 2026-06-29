@@ -25,7 +25,7 @@ _FB = None
 # Settings
 check_delay = 120  # minutes
 rotate_delay = 20  # seconds
-enable_blending = True  # True/False
+enable_blending = False  # cross-fade between photos; off = instant cut
 blending_duration = 5  # second - how long to spend blending between 2 images
 
 # Weather overlay settings

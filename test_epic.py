@@ -34,7 +34,7 @@ class TestDefaultSettings:
         assert epic.rotate_delay == 20
 
     def test_enable_blending_default(self):
-        assert epic.enable_blending is True
+        assert epic.enable_blending is False  # instant cut (fade disabled)
 
     def test_blending_duration_default(self):
         assert epic.blending_duration == 5
