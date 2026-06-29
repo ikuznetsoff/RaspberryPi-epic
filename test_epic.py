@@ -1909,3 +1909,19 @@ class TestBuildTestPattern:
         bottom = epic.build_test_pattern((480, 480))[470]
         assert (bottom[:, 0] == bottom[:, 1]).all() and (bottom[:, 1] == bottom[:, 2]).all()
         assert 128 in set(int(v) for v in bottom[:, 0])  # 50% grey patch present
+
+
+class TestTruncateTo6Bit:
+    def test_masks_low_two_bits(self):
+        assert epic.truncate_to_6bit(bytes([255, 3, 0, 254, 1, 128])) == bytes([252, 0, 0, 252, 0, 128])
+
+    def test_length_preserved(self):
+        assert len(epic.truncate_to_6bit(bytes(range(64)))) == 64
+
+    def test_already_6bit_aligned_unchanged(self):
+        data = bytes([0, 4, 8, 252, 128])  # all multiples of 4
+        assert epic.truncate_to_6bit(data) == data
+
+    def test_idempotent(self):
+        once = epic.truncate_to_6bit(bytes([255, 200, 130, 7]))
+        assert epic.truncate_to_6bit(once) == once

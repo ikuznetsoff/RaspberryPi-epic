@@ -67,6 +67,9 @@ TEST_PATTERN = bool(os.environ.get('EPIC_TESTPATTERN'))
 # Downscale 830->480: default nearest 'scale' (original look); EPIC_SMOOTHSCALE=1 opts into smoothscale.
 USE_SMOOTHSCALE = bool(os.environ.get('EPIC_SMOOTHSCALE'))
 
+# Zero low 2 bits/channel before the 32bpp fb push so vc4's KMS dither is a no-op (clean 18-bit like legacy DPI).
+FB_TRUNCATE = not os.environ.get('EPIC_FB_NO_TRUNCATE')
+
 WMO_CODES = {
     0: 'Clear',
     1: 'Mostly Clear',
@@ -709,11 +712,20 @@ def pack_rgb565(arr):
     return (r << 11) | (g << 5) | b
 
 
+_TRUNCATE_6BIT = bytes(b & 0xFC for b in range(256))
+
+
+def truncate_to_6bit(data):
+    return data.translate(_TRUNCATE_6BIT)
+
+
 def _push_to_fb(surface, fb):
     """Copy a pygame Surface into a mmapped framebuffer, converting pixel
     format on the fly. Supports 16bpp RGB565 (numpy required, dithered) and 32bpp BGRA."""
     if fb["bpp"] == 32:
         data = pygame.image.tobytes(surface, "BGRA")
+        if FB_TRUNCATE:
+            data = truncate_to_6bit(data)
         # Some fbs have stride padding; copy row by row if so.
         row = fb["xres"] * 4
         if fb["line_length"] == row:
