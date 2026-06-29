@@ -64,6 +64,9 @@ SATURATION = float(os.environ.get('EPIC_SATURATION', '1'))
 # Show a built-in grey/colour calibration pattern instead of Earth, to judge the panel by eye.
 TEST_PATTERN = bool(os.environ.get('EPIC_TESTPATTERN'))
 
+# Downscale 830->480: default nearest 'scale' (original look); EPIC_SMOOTHSCALE=1 opts into smoothscale.
+USE_SMOOTHSCALE = bool(os.environ.get('EPIC_SMOOTHSCALE'))
+
 WMO_CODES = {
     0: 'Clear',
     1: 'Mostly Clear',
@@ -647,7 +650,8 @@ def save_photos(imageurls, screen=None):
         # Crop out the centre 830px square from the image to make globe fill screen
         cropped = pygame.Surface((CROP_SIZE, CROP_SIZE))
         cropped.blit(image, (0, 0), (CROP_OFFSET, CROP_OFFSET, CROP_SIZE, CROP_SIZE))
-        cropped = pygame.transform.smoothscale(cropped, DISPLAY_SIZE)
+        scaler = pygame.transform.smoothscale if USE_SMOOTHSCALE else pygame.transform.scale
+        cropped = scaler(cropped, DISPLAY_SIZE)
         cropped = _apply_edge_desat(cropped)
 
         pygame.image.save(cropped, "./" + str(counter) + ".png")
